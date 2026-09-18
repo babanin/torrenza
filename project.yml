@@ -1,0 +1,49 @@
+name: Torrenza
+options:
+  minimumXcodeGenVersion: 2.44.0
+  deploymentTarget:
+    macOS: "26.0"
+packages:
+  TorrentEngine:
+    path: .
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    ARCHS: arm64
+    ENABLE_HARDENED_RUNTIME: YES
+    SWIFT_STRICT_CONCURRENCY: complete
+targets:
+  Torrenza:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+        excludes: [Info.plist, Torrenza.entitlements]
+    settings:
+      base:
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/Torrenza.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: dev.torrenza.app
+        PRODUCT_NAME: Torrenza
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        COMBINE_HIDPI_IMAGES: YES
+    dependencies:
+      - package: TorrentEngine
+        product: TorrentEngine
+      - package: TorrentEngine
+        product: TorrentCore
+      - package: TorrentEngine
+        product: TorrentStorage
+schemes:
+  Torrenza:
+    build:
+      targets:
+        Torrenza: all
+    run:
+      config: Debug
+    archive:
+      config: Release

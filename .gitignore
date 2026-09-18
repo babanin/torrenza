@@ -1,0 +1,16 @@
+.build/
+.build-*/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+artifacts/
+.swiftpm/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

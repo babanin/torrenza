@@ -1,0 +1,378 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0C9A3B01997414B686FFEAAF /* TorrenzaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FD023AE4DE259EE7DB6066 /* TorrenzaApp.swift */; };
+		15E510228C56F31EB118EBBA /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 048C42F93FC101967D9300AD /* ContentView.swift */; };
+		1B02FD79FB6093C292A46E28 /* ToolbarSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A7791A028569491691DB579 /* ToolbarSearchField.swift */; };
+		2DD4336AEBD56803612C6050 /* UIState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0CD872AC480845DFA9A31F0 /* UIState.swift */; };
+		54000B8CF0D68EAF65EC05B7 /* UISmokeDiagnostic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001C6E3FF4E74C24E4A00A83 /* UISmokeDiagnostic.swift */; };
+		54A8EAF493A0E16FE293E113 /* TorrentStorage in Frameworks */ = {isa = PBXBuildFile; productRef = FFBF0E93FA42910C91B17434 /* TorrentStorage */; };
+		676733997D22A2D776BC9F17 /* TorrentCore in Frameworks */ = {isa = PBXBuildFile; productRef = 9FF7A4A3A2744ADE20DD64EC /* TorrentCore */; };
+		9DCE1BF61B498F3C148D1175 /* TorrentOutlineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F63FF72CE52643A16A9D9184 /* TorrentOutlineView.swift */; };
+		AA97F3C846963A121C5B12A7 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D715535119C7670DC88FCA41 /* AppModel.swift */; };
+		BED8DC7CD9512AAA3F14F60B /* TorrentEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 72190949B17883394B221707 /* TorrentEngine */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		001C6E3FF4E74C24E4A00A83 /* UISmokeDiagnostic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UISmokeDiagnostic.swift; sourceTree = "<group>"; };
+		048C42F93FC101967D9300AD /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		3A24E17A04CC908BC038CD97 /* Torrenza.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Torrenza.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3A7791A028569491691DB579 /* ToolbarSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolbarSearchField.swift; sourceTree = "<group>"; };
+		A72E80AA97621DE1FEB60E68 /* torrenza */ = {isa = PBXFileReference; lastKnownFileType = folder; name = torrenza; path = .; sourceTree = SOURCE_ROOT; };
+		C4FD023AE4DE259EE7DB6066 /* TorrenzaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TorrenzaApp.swift; sourceTree = "<group>"; };
+		D715535119C7670DC88FCA41 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		E0CD872AC480845DFA9A31F0 /* UIState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIState.swift; sourceTree = "<group>"; };
+		F63FF72CE52643A16A9D9184 /* TorrentOutlineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TorrentOutlineView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		4DAF376EC17E1B7F5171F657 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BED8DC7CD9512AAA3F14F60B /* TorrentEngine in Frameworks */,
+				676733997D22A2D776BC9F17 /* TorrentCore in Frameworks */,
+				54A8EAF493A0E16FE293E113 /* TorrentStorage in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		32D8B87FB8BF43F7D4D4DA59 = {
+			isa = PBXGroup;
+			children = (
+				39E6E2DDD345CA74202F4649 /* App */,
+				A1A1E5FB4079D1BC08492064 /* Packages */,
+				64B5167BE0D09B0413B71EB8 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		39E6E2DDD345CA74202F4649 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				D715535119C7670DC88FCA41 /* AppModel.swift */,
+				048C42F93FC101967D9300AD /* ContentView.swift */,
+				3A7791A028569491691DB579 /* ToolbarSearchField.swift */,
+				F63FF72CE52643A16A9D9184 /* TorrentOutlineView.swift */,
+				C4FD023AE4DE259EE7DB6066 /* TorrenzaApp.swift */,
+				001C6E3FF4E74C24E4A00A83 /* UISmokeDiagnostic.swift */,
+				E0CD872AC480845DFA9A31F0 /* UIState.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		64B5167BE0D09B0413B71EB8 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				3A24E17A04CC908BC038CD97 /* Torrenza.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A1A1E5FB4079D1BC08492064 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				A72E80AA97621DE1FEB60E68 /* torrenza */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		86C87FE089566F637E366D6E /* Torrenza */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 011E780463772A3C8F7F0F47 /* Build configuration list for PBXNativeTarget "Torrenza" */;
+			buildPhases = (
+				C9D3DD01E495C17264A30D5E /* Sources */,
+				4DAF376EC17E1B7F5171F657 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Torrenza;
+			packageProductDependencies = (
+				72190949B17883394B221707 /* TorrentEngine */,
+				9FF7A4A3A2744ADE20DD64EC /* TorrentCore */,
+				FFBF0E93FA42910C91B17434 /* TorrentStorage */,
+			);
+			productName = Torrenza;
+			productReference = 3A24E17A04CC908BC038CD97 /* Torrenza.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		D0FD95F1030D75593B13E624 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					86C87FE089566F637E366D6E = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 2DD1D9FE0E44D8403A60C105 /* Build configuration list for PBXProject "Torrenza" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 32D8B87FB8BF43F7D4D4DA59;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4DC4B8D52784E1F971136E7A /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 64B5167BE0D09B0413B71EB8 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				86C87FE089566F637E366D6E /* Torrenza */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		C9D3DD01E495C17264A30D5E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA97F3C846963A121C5B12A7 /* AppModel.swift in Sources */,
+				15E510228C56F31EB118EBBA /* ContentView.swift in Sources */,
+				1B02FD79FB6093C292A46E28 /* ToolbarSearchField.swift in Sources */,
+				9DCE1BF61B498F3C148D1175 /* TorrentOutlineView.swift in Sources */,
+				0C9A3B01997414B686FFEAAF /* TorrenzaApp.swift in Sources */,
+				54000B8CF0D68EAF65EC05B7 /* UISmokeDiagnostic.swift in Sources */,
+				2DD4336AEBD56803612C6050 /* UIState.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		09919ADE36B60243191A924C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/Torrenza.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.torrenza.app;
+				PRODUCT_NAME = Torrenza;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		4ABB7D1735CF87253AF636C2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		567709F763FBA3524500F0FB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		FB8AA11821D3DB5D7D3F8158 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/Torrenza.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.torrenza.app;
+				PRODUCT_NAME = Torrenza;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		011E780463772A3C8F7F0F47 /* Build configuration list for PBXNativeTarget "Torrenza" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				09919ADE36B60243191A924C /* Debug */,
+				FB8AA11821D3DB5D7D3F8158 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		2DD1D9FE0E44D8403A60C105 /* Build configuration list for PBXProject "Torrenza" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				567709F763FBA3524500F0FB /* Debug */,
+				4ABB7D1735CF87253AF636C2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		4DC4B8D52784E1F971136E7A /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		72190949B17883394B221707 /* TorrentEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TorrentEngine;
+		};
+		9FF7A4A3A2744ADE20DD64EC /* TorrentCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TorrentCore;
+		};
+		FFBF0E93FA42910C91B17434 /* TorrentStorage */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TorrentStorage;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = D0FD95F1030D75593B13E624 /* Project object */;
+}
