@@ -4,6 +4,21 @@ import SQLite3
 @testable import TorrentStorage
 
 struct SQLiteStoreTests {
+    @Test func keysOpenFreshAndClosedConnectionsWithoutReadingValues() async throws {
+        let url = location()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = SQLiteStore(url: url)
+        #expect(try await store.keys(namespace: "metainfo").isEmpty)
+        try await store.write([
+            SQLiteEntry(namespace: "metainfo", key: "first", value: Data([1])),
+            SQLiteEntry(namespace: "metainfo", key: "second", value: Data([2])),
+            SQLiteEntry(namespace: "other", key: "third", value: Data([3]))
+        ])
+        try await store.close()
+        #expect(try await store.keys(namespace: "metainfo") == ["first", "second"])
+        try await store.close()
+    }
+
     private func location() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("torrenza-sqlite-\(UUID().uuidString)/Torrenza.sqlite")
     }

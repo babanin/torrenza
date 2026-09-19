@@ -140,7 +140,7 @@ public actor TorrentEngine {
             length = next
         }
         let expected = length / Int64(meta.pieceLength) + (length % Int64(meta.pieceLength) == 0 ? 0 : 1)
-        guard expected == meta.pieceHashes.count, meta.pieceHashes.allSatisfy({ $0.count == 20 }) else { throw TorrentError.invalidMetainfo("Invalid torrent piece hashes") }
+        guard expected == meta.pieceHashes.count, meta.pieceHashes.isValid else { throw TorrentError.invalidMetainfo("Invalid torrent piece hashes") }
     }
 
     public func snapshots() -> AsyncStream<[TransferSnapshot]> {

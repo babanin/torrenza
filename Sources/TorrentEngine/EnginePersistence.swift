@@ -96,33 +96,34 @@ actor EnginePersistence {
     }
     private func loadDatabase() async throws -> EngineArchive? {
         guard let bytes = try await store.read(namespace: "engine", key: "settings") else {
-            let transfers = try await store.readAll(namespace: "transfers")
-            let metadata = try await store.readAll(namespace: "metainfo")
+            let transfers = try await store.keys(namespace: "transfers")
+            let metadata = try await store.keys(namespace: "metainfo")
             guard transfers.isEmpty, metadata.isEmpty else { throw TorrentError.storage("Saved library settings are missing") }
             return nil
         }
         let header = try JSONDecoder().decode(EngineDatabaseHeader.self, from: bytes)
         guard header.version == 1 else { throw TorrentError.storage("Unsupported transfer state version") }
-        let metadata = try await store.readAll(namespace: "metainfo")
+        let metadata = try await store.keys(namespace: "metainfo")
         let transfers = try await store.readAll(namespace: "transfers")
         let signatures = try await store.readAll(namespace: "signatures")
-        let ownership = try await store.readAll(namespace: "ownership")
         savedOwnership = [:]
         var records: [EngineRecord] = []
         for (id, bytes) in transfers {
-            guard let rawMeta = metadata[id] else { throw TorrentError.storage("Saved torrent metadata is missing") }
+            // Decode one torrent at a time instead of holding the whole library's
+            // serialized metadata alongside its decoded representation at startup.
+            guard let rawMeta = try await store.read(namespace: "metainfo", key: id) else { throw TorrentError.storage("Saved torrent metadata is missing") }
             let meta = try JSONDecoder().decode(TorrentMetainfo.self, from: rawMeta)
             guard meta.id == id else { throw TorrentError.storage("Saved torrent identity does not match") }
             let mutable = try JSONDecoder().decode(MutableTransferRecord.self, from: bytes)
             var record = mutable.record(metainfo: meta)
             if let signatureData = signatures[id] { record.diskSignatures = try JSONDecoder().decode([DiskSignature].self, from: signatureData) }
-            if let data = ownership[id] {
+            if let data = try await store.read(namespace: "ownership", key: id) {
                 record.ownedSignatures = try JSONDecoder().decode([DiskSignature].self, from: data)
                 savedOwnership[id] = record.ownedSignatures
             }
             records.append(record)
         }
-        savedMetadata = Set(metadata.keys); savedTransfers = transfers; savedSignatures = signatures; savedHeader = bytes
+        savedMetadata = Set(metadata); savedTransfers = transfers; savedSignatures = signatures; savedHeader = bytes
         return EngineArchive(version: header.version, cleanShutdown: header.cleanShutdown, settings: header.settings, records: records)
     }
     func save(_ archive: EngineArchive, contacts: Data? = nil, statistics: StatisticsSnapshot? = nil) async throws {

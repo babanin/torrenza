@@ -70,7 +70,7 @@ public enum MetainfoParser {
         let expectedPieces = total / pieceLength + (total % pieceLength == 0 ? 0 : 1)
         guard expectedPieces == Int64(pieces.count / 20) else { throw invalid("Piece hash count does not match torrent length") }
         if let privacy = info["private"] { guard let value = privacy.intValue, value == 0 || value == 1 else { throw invalid("Invalid private flag") } }
-        let hashes = stride(from: 0, to: pieces.count, by: 20).map { Data(pieces[$0..<($0 + 20)]) }
+        let hashes = try PieceHashes(bytes: pieces)
         return TorrentMetainfo(infoHash: Data(Insecure.SHA1.hash(data: data)), rawInfo: data, name: name, pieceLength: Int(pieceLength), pieceHashes: hashes, files: files, trackerTiers: trackerTiers, isPrivate: info["private"]?.intValue == 1, isMultiFile: isMultiFile)
     }
 

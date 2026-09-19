@@ -17,7 +17,7 @@ public struct TorrentMetainfo: Sendable, Codable, Equatable {
     public let rawInfo: Data
     public let name: String
     public let pieceLength: Int
-    public let pieceHashes: [Data]
+    public let pieceHashes: PieceHashes
     public let files: [TorrentFile]
     public let trackerTiers: [[URL]]
     public let isPrivate: Bool
@@ -25,6 +25,9 @@ public struct TorrentMetainfo: Sendable, Codable, Equatable {
     public var totalLength: Int64 { files.reduce(0) { $0 + $1.length } }
     public var id: String { infoHash.hexString }
     public init(infoHash: Data, rawInfo: Data, name: String, pieceLength: Int, pieceHashes: [Data], files: [TorrentFile], trackerTiers: [[URL]], isPrivate: Bool, isMultiFile: Bool) {
+        self.init(infoHash: infoHash, rawInfo: rawInfo, name: name, pieceLength: pieceLength, pieceHashes: PieceHashes(pieceHashes), files: files, trackerTiers: trackerTiers, isPrivate: isPrivate, isMultiFile: isMultiFile)
+    }
+    public init(infoHash: Data, rawInfo: Data, name: String, pieceLength: Int, pieceHashes: PieceHashes, files: [TorrentFile], trackerTiers: [[URL]], isPrivate: Bool, isMultiFile: Bool) {
         self.infoHash = infoHash; self.rawInfo = rawInfo; self.name = name; self.pieceLength = pieceLength; self.pieceHashes = pieceHashes; self.files = files; self.trackerTiers = trackerTiers; self.isPrivate = isPrivate; self.isMultiFile = isMultiFile
     }
     public func lengthOfPiece(_ index: Int) -> Int { Int(min(Int64(pieceLength), totalLength - Int64(index) * Int64(pieceLength))) }

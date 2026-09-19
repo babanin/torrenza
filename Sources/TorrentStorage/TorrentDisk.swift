@@ -138,7 +138,7 @@ private final class DiskWorker: @unchecked Sendable {
             }
         }
         let expected = total == 0 ? 0 : (total - 1) / Int64(meta.pieceLength) + 1
-        guard expected == meta.pieceHashes.count, meta.pieceHashes.allSatisfy({ $0.count == 20 }) else { throw TorrentError.storage("Piece count does not match content length") }
+        guard expected == meta.pieceHashes.count, meta.pieceHashes.isValid else { throw TorrentError.storage("Piece count does not match content length") }
     }
     func failure(_ action: String) -> TorrentError { .storage("\(action): \(String(cString: strerror(errno)))") }
     func prepare() throws {

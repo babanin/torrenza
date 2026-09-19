@@ -44,6 +44,11 @@ public actor SQLiteStore {
         try await perform { try $0.readAll(namespace: namespace) }
     }
 
+    /// Enumerates records without retaining their potentially large values.
+    public func keys(namespace: String) async throws -> [String] {
+        try await perform { try $0.keys(namespace: namespace) }
+    }
+
     /// Applies all namespaces in one durable transaction. A nil value deletes the record.
     public func write(_ entries: [SQLiteEntry]) async throws {
         try await perform { worker in
@@ -215,6 +220,7 @@ private final class SQLiteWorker: @unchecked Sendable {
     }
 
     func keys(namespace: String) throws -> [String] {
+        try open()
         let statement = try prepare("SELECT key FROM records WHERE namespace=?")
         defer { sqlite3_finalize(statement) }
         try bind(namespace, to: statement, index: 1)
