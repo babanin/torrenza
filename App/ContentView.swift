@@ -240,7 +240,7 @@ struct AddTorrentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(draft.metainfo.name).font(.title2).bold().lineLimit(2)
-            HStack { Label(draft.destination?.path ?? "Choose a destination", systemImage: "folder").lineLimit(2).truncationMode(.middle); Spacer(); Button("Choose…", action: draft.chooseDestination) }
+            HStack { Label(draft.destination?.path ?? "Choose a destination", systemImage: "folder").lineLimit(2).truncationMode(.middle); Spacer(); Button("Choose…") { model.chooseDestination(for: draft) } }
             List(draft.metainfo.files.filter { !$0.isPadding }) { file in
                 Toggle(isOn: Binding(get: { draft.selectedFiles.contains(file.index) }, set: { if $0 { draft.selectedFiles.insert(file.index) } else { draft.selectedFiles.remove(file.index) } })) {
                     HStack { Text(file.path.joined(separator: "/")).lineLimit(1).truncationMode(.middle); Spacer(); Text(byteString(file.length)).foregroundStyle(.secondary) }

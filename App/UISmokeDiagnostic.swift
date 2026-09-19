@@ -440,9 +440,20 @@ import TorrentStorage
             try require(isProfileReady && activeProfile?.id == "default", "Existing root opens as Default")
             let original = activeProfile!
             let originalSession = statistics!.current.id
+            let originalTorrentDirectory = original.directory.appendingPathComponent("Torrent Files", isDirectory: true)
+            let originalDestinationDirectory = original.directory.appendingPathComponent("Downloads", isDirectory: true)
             settings.maxDownloads = 3; saveSettings()
             uiState.filter = TreeFilter.completed.rawValue
             uiState.columnWidths["name"] = 417
+            uiState.lastTorrentDirectory = originalTorrentDirectory
+            uiState.lastDestinationDirectory = originalDestinationDirectory
+            guard var legacyState = try JSONSerialization.jsonObject(with: JSONEncoder().encode(uiState)) as? [String: Any] else {
+                throw SmokeFailure(message: "Could not prepare legacy interface preferences")
+            }
+            legacyState.removeValue(forKey: "lastTorrentDirectory")
+            legacyState.removeValue(forKey: "lastDestinationDirectory")
+            let decodedLegacy = try JSONDecoder().decode(UIState.self, from: JSONSerialization.data(withJSONObject: legacyState))
+            try require(decodedLegacy.lastTorrentDirectory == nil && decodedLegacy.lastDestinationDirectory == nil && decodedLegacy.filter == uiState.filter && decodedLegacy.columnWidths == uiState.columnWidths, "Legacy interface preferences load without saved dialog directories")
             await waitForProfileWork()
             beginCreateProfile(); profileName = "Work"; submitProfile()
             await waitForProfileWork()
@@ -450,11 +461,17 @@ import TorrentStorage
             let work = activeProfile!
             try require(work.databaseURL != original.databaseURL && transfers.isEmpty, "New profile uses an independent empty database")
             try require(settings.maxDownloads == 2 && filter == .all && uiState.columnWidths.isEmpty, "Settings and interface preferences do not leak")
+            try require(uiState.lastTorrentDirectory == nil && uiState.lastDestinationDirectory == nil, "New profile starts without another profile's dialog directories")
             try require(statistics?.current.id != originalSession && statistics?.lifetimeDownloadedBytes == 0, "Statistics start independently")
+            let workTorrentDirectory = work.directory.appendingPathComponent("Torrent Files", isDirectory: true)
+            let workDestinationDirectory = work.directory.appendingPathComponent("Downloads", isDirectory: true)
             settings.maxDownloads = 1; saveSettings(); filter = .paused
+            uiState.lastTorrentDirectory = workTorrentDirectory
+            uiState.lastDestinationDirectory = workDestinationDirectory
             await waitForProfileWork()
             switchProfile(original); await waitForProfileWork()
             try require(settings.maxDownloads == 3 && filter == .completed && uiState.columnWidths["name"] == 417, "Switching back restores settings and interface preferences")
+            try require(uiState.lastTorrentDirectory == originalTorrentDirectory && uiState.lastDestinationDirectory == originalDestinationDirectory, "Switching back restores both original profile dialog directories")
             try require(statistics?.current.id != originalSession, "Returning to a profile begins a new session")
             let history = try await engine.sessionHistory()
             try require(history.contains { $0.id == originalSession && $0.endedAt != nil && !$0.interrupted }, "Switching closes the previous session cleanly")
@@ -463,6 +480,7 @@ import TorrentStorage
             profileEditor = nil; profileEditorError = nil
             switchProfile(work); await waitForProfileWork()
             try require(settings.maxDownloads == 1 && filter == .paused, "Second profile retains its own values")
+            try require(uiState.lastTorrentDirectory == workTorrentDirectory && uiState.lastDestinationDirectory == workDestinationDirectory, "Second profile retains its own distinct dialog directories")
             beginRenameProfile(); profileName = "Research"; submitProfile(); await waitForProfileWork()
             try require(activeProfile?.id == work.id && activeProfile?.name == "Research", "Rename preserves database identity")
             let store = SQLiteStore(url: original.databaseURL)
@@ -503,6 +521,7 @@ import TorrentStorage
             reopened.launch(); await reopened.waitForProfileWork()
             try require(reopened.activeProfile?.id == work.id && reopened.activeProfile?.name == "Research", "Relaunch restores the last selected profile and name")
             try require(reopened.settings.maxDownloads == 1 && reopened.filter == .paused, "Relaunch restores profile settings")
+            try require(reopened.uiState.lastTorrentDirectory == workTorrentDirectory && reopened.uiState.lastDestinationDirectory == workDestinationDirectory, "Relaunch restores both saved dialog directories")
             await reopened.shutdown()
             let closedDatabase = try Data(contentsOf: work.databaseURL)
             await shutdown()

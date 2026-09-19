@@ -20,6 +20,9 @@ struct UIState: Codable, Equatable {
     var columnWidths: [String: Double] = [:]
     // Optional so existing profile state decodes without losing saved interface preferences.
     var appearance: AppAppearance?
+    // Dialog starting locations only; choosing a folder still grants access through NSOpenPanel.
+    var lastTorrentDirectory: URL?
+    var lastDestinationDirectory: URL?
 }
 
 @MainActor extension AppModel {

@@ -325,11 +325,30 @@ import UserNotifications
         guard isProfileReady, !isSwitchingProfile, !terminating, !filePickerOpen, profileEditor == nil, qbittorrentImport == nil else { return }
         filePickerOpen = true
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.torrent]; panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
+        panel.directoryURL = uiState.lastTorrentDirectory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         panel.begin { [weak self] response in
             Task { @MainActor in
                 guard let self else { return }
                 self.filePickerOpen = false
-                if response == .OK, !self.terminating { self.open(panel.urls) }
+                if response == .OK, !self.terminating {
+                    self.uiState.lastTorrentDirectory = panel.urls.first?.deletingLastPathComponent()
+                    self.open(panel.urls)
+                }
+            }
+        }
+    }
+    func chooseDestination(for draft: ImportDraft) {
+        guard pendingImport === draft, isProfileReady, !isSwitchingProfile, !terminating, !filePickerOpen, !draft.isAdding else { return }
+        filePickerOpen = true
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true; panel.prompt = "Choose Destination"
+        panel.directoryURL = draft.destination ?? uiState.lastDestinationDirectory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        panel.begin { [weak self, weak draft] response in
+            Task { @MainActor in
+                guard let self else { return }
+                self.filePickerOpen = false
+                guard response == .OK, !self.terminating, let draft, self.pendingImport === draft, let directory = panel.url else { return }
+                draft.destination = directory
+                self.uiState.lastDestinationDirectory = directory
             }
         }
     }
@@ -491,10 +510,6 @@ enum ProfileEditor: String, Identifiable {
     var allowExisting = false
     var isAdding = false
     init(metainfo: TorrentMetainfo, ratio: Double) { self.metainfo = metainfo; self.ratio = ratio; selectedFiles = Set(metainfo.files.filter { !$0.isPadding }.map(\.index)) }
-    func chooseDestination() {
-        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true; panel.prompt = "Choose Destination"
-        panel.begin { [weak self] result in if result == .OK { Task { @MainActor in self?.destination = panel.url } } }
-    }
 }
 
 extension UTType { static let torrent = UTType(importedAs: "org.bittorrent.torrent", conformingTo: .data) }
