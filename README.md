@@ -46,6 +46,12 @@ Private torrents must be imported as `.torrent` files for tracker-only discovery
 
 Pure v2 torrents, µTP, protocol encryption, web seeds, automatic port forwarding, torrent creation, remote control, and file relocation are not implemented. A TCP-only client cannot connect to peers that require unsupported transports or encryption.
 
+## Network identity and privacy
+
+Torrenza advertises a qBittorrent 5.1.0 compatibility identity in its peer ID, extension handshake, and HTTP tracker User-Agent. The random part of the peer ID is regenerated for each engine session. DHT uses the optional binary `qB` version marker; it has no human-readable application-name field. This changes advertised branding only: Torrenza still uses its own Swift engine and can be distinguished by protocol behavior.
+
+**Your IP address is still visible to peers, trackers, and DHT nodes.** Client naming and randomized IDs do not hide it. Torrenza currently follows system routing and does not provide a proxy, VPN-interface binding, or a kill switch. To conceal your home IP, configure a VPN that carries all torrent traffic, including UDP, DNS, and IPv6, and blocks traffic when its tunnel disconnects. A browser proxy or a split tunnel that excludes Torrenza is insufficient. IP concealment has not been verified with a live VPN.
+
 ## Resource design
 
 Defaults are two active downloads, two seeds, 60 peer connections overall, and a shared 32 MiB payload budget. Default seeding stops at ratio 1.0; unlimited seeding and other limits are available per torrent. HDD/unknown-device scheduling is conservative; an explicit SSD profile permits the normal two-download concurrency on a volume.

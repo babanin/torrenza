@@ -128,7 +128,7 @@ public actor TorrentEngine {
         let directory = stateDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Torrenza", isDirectory: true)
         self.directory = directory
         persistence = EnginePersistence(directory: directory)
-        peerID = Data(("-TZ0100-" + String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))).utf8)
+        peerID = ClientIdentity.makePeerID()
     }
 
     nonisolated static func validateMetainfo(_ meta: TorrentMetainfo) throws {

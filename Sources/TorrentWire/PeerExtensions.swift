@@ -22,7 +22,7 @@ public enum PeerExtensions {
     public static func extendedHandshake(metadataSize: Int? = nil, allowPEX: Bool = true) -> Data {
         var mapping: [String: BencodeValue] = ["ut_metadata": .integer(1)]
         if allowPEX { mapping["ut_pex"] = .integer(2) }
-        var values: [String: BencodeValue] = ["m": .dictionary(mapping), "v": .bytes(Data("Torrenza/1.0".utf8)), "reqq": .integer(32)]
+        var values: [String: BencodeValue] = ["m": .dictionary(mapping), "v": .bytes(Data(ClientIdentity.userAgent.utf8)), "reqq": .integer(32)]
         if let size = metadataSize, (1...maxMetadataSize).contains(size) { values["metadata_size"] = .integer(Int64(size)) }
         return Bencode.encode(.dictionary(values))
     }

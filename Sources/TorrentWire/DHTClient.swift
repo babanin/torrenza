@@ -187,7 +187,7 @@ public actor DHTClient {
         defer { queryingEndpoints.remove(endpoint) }
         var arguments = arguments; arguments["id"] = .bytes(nodeID)
         let transaction = Data((0..<4).map { _ in UInt8.random(in: 0...255) })
-        var envelope: [String: BencodeValue] = ["t": .bytes(transaction), "y": .bytes(Data("q".utf8)), "q": .bytes(Data(method.utf8)), "a": .dictionary(arguments)]
+        var envelope: [String: BencodeValue] = ["t": .bytes(transaction), "y": .bytes(Data("q".utf8)), "q": .bytes(Data(method.utf8)), "a": .dictionary(arguments), "v": .bytes(ClientIdentity.dhtVersion)]
         // Network.framework cannot share a listener's IPv6 port with a separate outbound flow.
         // BEP 43 prevents these ephemeral IPv6 endpoints entering another node's routing table.
         if IPv6Address(endpoint.host) != nil { envelope["ro"] = .integer(1) }
@@ -362,7 +362,7 @@ public actor DHTClient {
             }
         default: error = "Unknown method"
         }
-        var reply: [String: BencodeValue] = ["t": .bytes(transaction)]
+        var reply: [String: BencodeValue] = ["t": .bytes(transaction), "v": .bytes(ClientIdentity.dhtVersion)]
         if let compact = CompactAddress.encode(endpoint) { reply["ip"] = .bytes(compact) }
         if let error { reply["y"] = .bytes(Data("e".utf8)); reply["e"] = .list([.integer(method == "announce_peer" ? 203 : 204), .bytes(Data(error.utf8))]) }
         else { reply["y"] = .bytes(Data("r".utf8)); reply["r"] = .dictionary(response) }

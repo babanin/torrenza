@@ -52,10 +52,12 @@ public struct TrackerClient: Sendable {
     }
     private func httpAnnounce(url: URL, request: TrackerRequest) async throws -> TrackerResponse {
         let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil; configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
         configuration.timeoutIntervalForRequest = 20; configuration.timeoutIntervalForResource = 30
         configuration.httpMaximumConnectionsPerHost = 2
         let session = URLSession(configuration: configuration); defer { session.invalidateAndCancel() }
-        var query = URLRequest(url: try Self.announceURL(url, request: request)); query.setValue("Torrenza/1.0", forHTTPHeaderField: "User-Agent")
+        var query = URLRequest(url: try Self.announceURL(url, request: request)); query.setValue(ClientIdentity.userAgent, forHTTPHeaderField: "User-Agent")
         let (bytes, response) = try await session.bytes(for: query)
         guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else { throw TorrentError.network("Tracker returned an HTTP error") }
         guard response.expectedContentLength <= 2 * 1024 * 1024 else { throw TorrentError.invalidMessage("Tracker response exceeds limit") }
