@@ -71,7 +71,7 @@ final class EngineTests: XCTestCase, @unchecked Sendable {
         } catch { await client.shutdown(); await seed.shutdown(); throw error }
     }
 
-    func testResumeRechecksModifiedFilesAndPreservesPause() async throws {
+    func testResumeTrustsSavedProgressUntilExplicitRecheck() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
         let target = root.appendingPathComponent("target")
@@ -89,7 +89,11 @@ final class EngineTests: XCTestCase, @unchecked Sendable {
         await restored.restore()
         let result = await restored.currentSnapshots().first
         XCTAssertEqual(result?.state, .paused)
-        XCTAssertEqual(result?.completedBytes, 32_768)
+        XCTAssertEqual(result?.completedBytes, 65_536)
+        await restored.recheck(meta.id)
+        let checked = await restored.currentSnapshots().first
+        XCTAssertEqual(checked?.state, .paused)
+        XCTAssertEqual(checked?.completedBytes, 32_768)
         await restored.shutdown()
     }
 

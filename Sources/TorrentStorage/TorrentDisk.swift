@@ -20,13 +20,14 @@ public actor TorrentDisk {
     public let selectedFiles: Set<Int>
     public let destination: URL
 
-    public init(metainfo: TorrentMetainfo, destination: URL, selectedFiles: Set<Int>, allowExisting: Bool = false) throws {
+    public init(metainfo: TorrentMetainfo, destination: URL, selectedFiles: Set<Int>, allowExisting: Bool = false, requireExistingPayload: Bool = false, requireExistingSidecars: Bool = false) throws {
         try DiskWorker.validate(metainfo)
+        guard !(requireExistingPayload || requireExistingSidecars) || allowExisting else { throw TorrentError.storage("Existing payload mode requires permission to reuse files") }
         guard selectedFiles.isSubset(of: Set(metainfo.files.filter { !$0.isPadding }.map(\.index))) else { throw TorrentError.storage("Invalid file selection") }
         self.metainfo = metainfo
         self.destination = destination
         self.selectedFiles = selectedFiles
-        self.worker = DiskWorker(meta: metainfo, destination: destination, selected: selectedFiles, allowExisting: allowExisting)
+        self.worker = DiskWorker(meta: metainfo, destination: destination, selected: selectedFiles, allowExisting: allowExisting, requireExistingPayload: requireExistingPayload, requireExistingSidecars: requireExistingSidecars)
     }
 
     private func perform<T: Sendable>(_ operation: @escaping @Sendable (DiskWorker) throws -> T) async throws -> T {
@@ -52,6 +53,11 @@ public actor TorrentDisk {
     }
 
     public func fileSnapshots(verified: PieceBitset) -> [FileSnapshot] {
+        Self.fileSnapshots(metainfo: metainfo, selectedFiles: selectedFiles, verified: verified)
+    }
+
+    /// Reconstructs progress from saved metadata without opening payload files.
+    public nonisolated static func fileSnapshots(metainfo: TorrentMetainfo, selectedFiles: Set<Int>, verified: PieceBitset) -> [FileSnapshot] {
         // A word-level rank index makes this O(bitfield bytes + file count), rather
         // than walking every piece of every file whenever the UI requests progress.
         let words = (verified.bytes.count + 7) / 8
@@ -90,6 +96,8 @@ private final class DiskWorker: @unchecked Sendable {
     let destination: URL
     let selected: Set<Int>
     let allowExisting: Bool
+    let requireExistingSidecars: Bool
+    let requireExistingPayload: Bool
     let totalLength: Int64
     var rootFD: Int32 = -1
     var rootIdentity: (UInt64, UInt64)?
@@ -103,8 +111,8 @@ private final class DiskWorker: @unchecked Sendable {
     var dirtyDirectories = Set<String>()
     static let maxOperation = 1_048_576
 
-    init(meta: TorrentMetainfo, destination: URL, selected: Set<Int>, allowExisting: Bool) {
-        self.meta = meta; self.destination = destination; self.selected = selected; self.allowExisting = allowExisting
+    init(meta: TorrentMetainfo, destination: URL, selected: Set<Int>, allowExisting: Bool, requireExistingPayload: Bool, requireExistingSidecars: Bool) {
+        self.meta = meta; self.destination = destination; self.selected = selected; self.allowExisting = allowExisting; self.requireExistingPayload = requireExistingPayload; self.requireExistingSidecars = requireExistingSidecars
         self.totalLength = meta.totalLength
     }
     deinit { close() }
@@ -146,14 +154,19 @@ private final class DiskWorker: @unchecked Sendable {
             for path in fileLengths.keys.sorted() { try preflight(path.split(separator: "/").map(String.init)) }
             for (path, length) in fileLengths.sorted(by: { $0.key < $1.key }) {
                 let components = path.split(separator: "/").map(String.init)
-                let parent = try directory(Array(components.dropLast()), create: true); defer { Darwin.close(parent) }
-                var created = true
-                var fd = openat(parent, components.last!, O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_CREAT | O_EXCL, 0o600)
-                if fd < 0 && errno == EEXIST && allowExisting {
+                // Saved sessions require their existing payload and boundary data.
+                // New imports can still create sidecars for future downloads.
+                let existingPayload = path.hasPrefix(".torrenza-") ? requireExistingSidecars : requireExistingPayload
+                let parent = try directory(Array(components.dropLast()), create: !existingPayload); defer { Darwin.close(parent) }
+                var created = !existingPayload
+                var fd = existingPayload
+                    ? openat(parent, components.last!, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
+                    : openat(parent, components.last!, O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_CREAT | O_EXCL, 0o600)
+                if !existingPayload && fd < 0 && errno == EEXIST && allowExisting {
                     created = false
                     fd = openat(parent, components.last!, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
                 }
-                guard fd >= 0 else { throw failure("Create \(path)") }; defer { Darwin.close(fd) }
+                guard fd >= 0 else { throw failure("\(existingPayload ? "Open" : "Create") \(path)") }; defer { Darwin.close(fd) }
                 var info = stat(); guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { throw TorrentError.storage("Destination is not a regular file") }
                 if created { newlyCreated[path] = (UInt64(info.st_dev), info.st_ino) }
                 if !created && info.st_size != length { throw TorrentError.storage("Existing file size does not match torrent: \(path)") }

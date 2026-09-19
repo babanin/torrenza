@@ -15,6 +15,7 @@ struct EngineRecord: Codable, Sendable {
     var downloaded: Int64
     var uploaded: Int64
     var wantedRunning: Bool
+    var quarantineError: String? = nil
     var verified: PieceBitset
 }
 
@@ -47,14 +48,15 @@ private struct MutableTransferRecord: Codable, Sendable {
     var downloaded: Int64
     var uploaded: Int64
     var wantedRunning: Bool
+    var quarantineError: String? = nil
     var verified: PieceBitset
     init(_ record: EngineRecord) {
         destination = record.destination; bookmark = record.bookmark; volumeUUID = record.volumeUUID
         diskSignatures = nil; ownedSignatures = nil; selectedFiles = record.selectedFiles; seedRatio = record.seedRatio
-        downloaded = record.downloaded; uploaded = record.uploaded; wantedRunning = record.wantedRunning; verified = record.verified
+        downloaded = record.downloaded; uploaded = record.uploaded; wantedRunning = record.wantedRunning; quarantineError = record.quarantineError; verified = record.verified
     }
     func record(metainfo: TorrentMetainfo) -> EngineRecord {
-        EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, volumeUUID: volumeUUID, diskSignatures: diskSignatures, ownedSignatures: ownedSignatures, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloaded, uploaded: uploaded, wantedRunning: wantedRunning, verified: verified)
+        EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, volumeUUID: volumeUUID, diskSignatures: diskSignatures, ownedSignatures: ownedSignatures, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloaded, uploaded: uploaded, wantedRunning: wantedRunning, quarantineError: quarantineError, verified: verified)
     }
 }
 
@@ -169,6 +171,17 @@ actor EnginePersistence {
         if let sessionData { savedSession = sessionData }
         if let lifetimeData { savedLifetime = lifetimeData }
     }
+    /// Persist a stopped error even when quarantining cancelled the failing peer task.
+    /// This does not flush unrelated torrents or rewrite their progress.
+    func saveQuarantine(_ record: EngineRecord) async throws {
+        let id = record.metainfo.id
+        guard savedMetadata.contains(id) else { return }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let value = try encoder.encode(MutableTransferRecord(record))
+        try await store.write([SQLiteEntry(namespace: "transfers", key: id, value: value)])
+        savedTransfers[id] = value
+    }
+
     func validateStatistics() async throws {
         for data in try await store.readAll(namespace: "sessions").values {
             let session = try JSONDecoder().decode(SessionStatistics.self, from: data)

@@ -17,6 +17,7 @@ struct ContentView: View {
                     } actions: {
                         Button("Open Torrent…", action: model.openFile)
                         Button("Open Magnet Link…") { model.showMagnet = true }
+                        Button("Import from qBittorrent…", action: model.openQBittorrentImport)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -76,9 +77,12 @@ struct ContentView: View {
                 Menu {
                     Button("Open Torrent…", action: model.openFile)
                     Button("Open Magnet Link…") { model.showMagnet = true }
+                    Divider()
+                    Button("Import from qBittorrent…", action: model.openQBittorrentImport)
+                        .disabled(!model.canImportFromQBittorrent)
                 } label: { Label("Add Torrent", systemImage: "plus") }
                 .help("Add a torrent or magnet link")
-                .disabled(!model.isProfileReady || model.isSwitchingProfile)
+                .disabled(!model.isProfileReady || model.isSwitchingProfile || model.qbittorrentImport != nil)
             }
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItemGroup(placement: .primaryAction) {
@@ -106,6 +110,7 @@ struct ContentView: View {
         }
         .sheet(item: $model.profileEditor, onDismiss: model.profileEditorDismissed) { editor in ProfileEditorView(model: model, editor: editor) }
         .sheet(item: $model.pendingImport, onDismiss: model.importDismissed) { draft in AddTorrentView(model: model, draft: draft) }
+        .sheet(item: $model.qbittorrentImport, onDismiss: model.qbittorrentImportDismissed) { draft in QBittorrentImportView(model: model, draft: draft) }
         .sheet(isPresented: $model.showMagnet) { magnetSheet }
         .sheet(isPresented: $model.confirmRemoval) { removalSheet }
         .alert("Torrenza", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("OK") { model.error = nil } } message: { Text(model.error ?? "") }
@@ -295,6 +300,8 @@ struct TransferInspector: View {
                     Spacer()
                 }
             }.padding(14)
+        } else if model.selectedNodes.count > 1 {
+            ContentUnavailableView("\(model.selectedNodes.count) Items Selected", systemImage: "rectangle.stack", description: Text("Use the toolbar or Transfer menu to act on the selected torrents. Select one torrent to see its details."))
         } else {
             ContentUnavailableView("Select a Torrent", systemImage: "sidebar.right", description: Text("Choose a torrent to see details and select files."))
         }
@@ -305,6 +312,13 @@ struct SettingsView: View {
     @Bindable var model: AppModel
     var body: some View {
         Form {
+            Section("Appearance") {
+                Picker("Theme", selection: $model.appearance) {
+                    ForEach(AppAppearance.allCases, id: \.self) { appearance in
+                        Text(appearance.title).tag(appearance)
+                    }
+                }.pickerStyle(.segmented)
+            }.disabled(!model.isProfileReady || model.isSwitchingProfile)
             Section("Transfers") {
                 Stepper("Active downloads: \(model.settings.maxDownloads)", value: $model.settings.maxDownloads, in: 1...8)
                 Stepper("Active seeds: \(model.settings.maxSeeds)", value: $model.settings.maxSeeds, in: 0...8)

@@ -1,5 +1,10 @@
-import Foundation
+import AppKit
 import TorrentEngine
+
+enum AppAppearance: String, Codable, CaseIterable {
+    case system, light, dark
+    var title: String { rawValue.capitalized }
+}
 
 struct UIState: Codable, Equatable {
     var version = 1
@@ -9,11 +14,28 @@ struct UIState: Codable, Equatable {
     var expandedNodeIDs: [String] = []
     var hasSavedExpansion = false
     var selectedNodeID: String?
+    var selectedNodeIDs: [String]?
+    var effectiveSelectedNodeIDs: [String] { selectedNodeIDs ?? selectedNodeID.map { [$0] } ?? [] }
     var columnOrder: [String] = []
     var columnWidths: [String: Double] = [:]
+    // Optional so existing profile state decodes without losing saved interface preferences.
+    var appearance: AppAppearance?
 }
 
 @MainActor extension AppModel {
+    var appearance: AppAppearance {
+        get { uiState.appearance ?? .system }
+        set { uiState.appearance = newValue }
+    }
+
+    func applyAppearance() {
+        switch appearance {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+
     /// Old app-owned preferences are read only for migration; SQLite owns all subsequent writes.
     func migrateLegacyUIState() -> (state: UIState, keys: [String]) {
         let defaults = profileDefaults

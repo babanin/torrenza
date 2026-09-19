@@ -29,7 +29,7 @@ import UserNotifications
     private var operationCount = 0
     private var terminating = false
     private var canChangeProfile: Bool {
-        !isSwitchingProfile && !terminating && !filePickerOpen && operationCount == 0 && !isImporting && pendingImport == nil && !showMagnet && !confirmRemoval
+        !isSwitchingProfile && !terminating && !filePickerOpen && operationCount == 0 && !isImporting && pendingImport == nil && qbittorrentImport == nil && !showMagnet && !confirmRemoval
     }
     var canSwitchProfile: Bool { canChangeProfile && profileEditor == nil }
 
@@ -43,7 +43,12 @@ import UserNotifications
     var transfers: [TransferSnapshot] = []
     var statistics: StatisticsSnapshot?
     var settings = EngineSettings()
-    var uiState = UIState() { didSet { scheduleUIStateSave() } }
+    var uiState = UIState() {
+        didSet {
+            if oldValue.appearance != uiState.appearance { applyAppearance() }
+            scheduleUIStateSave()
+        }
+    }
     var didLoadUIState = false
     var filter: TreeFilter {
         get { let filter = TreeFilter(rawValue: uiState.filter) ?? .all; return filter == .attention ? .all : filter }
@@ -51,9 +56,14 @@ import UserNotifications
     }
     var search = ""
     var searchFocusRequest = 0
-    var selection: TorrentTreeNode?
+    var selectedNodes: [TorrentTreeNode] = []
+    var selection: TorrentTreeNode? {
+        get { selectedNodes.count == 1 ? selectedNodes.first : nil }
+        set { selectedNodes = newValue.map { [$0] } ?? [] }
+    }
     var error: String?
     var pendingImport: ImportDraft?
+    var qbittorrentImport: QBittorrentImportDraft?
     var showMagnet = false
     var magnetText = ""
     var showInspector: Bool {
@@ -77,13 +87,20 @@ import UserNotifications
     @ObservationIgnored private var uiSaveTask: Task<Void, Never>?
 
     var selectedTransfer: TransferSnapshot? {
-        guard let selection, selection.transferIDs.count == 1, let id = selection.transferIDs.first else { return nil }
-        return transfers.first { $0.id == id }
+        let ids = selectedNodes.reduce(into: Set<String>()) { $0.formUnion($1.transferIDs) }
+        let selected = transfers.filter { ids.contains($0.id) }
+        return selected.count == 1 ? selected.first : nil
     }
     var selectedIDs: Set<String> {
-        if case .file = selection?.kind { return [] }
-        let ids = selection?.transferIDs ?? []
-        return ids.filter { id in transfers.first(where: { $0.id == id })?.state != .resolving }
+        let ids = selectedNodes.reduce(into: Set<String>()) { ids, node in
+            if case .file = node.kind { return }
+            ids.formUnion(node.transferIDs)
+        }
+        return ids.intersection(transfers.lazy.filter { $0.state != .resolving }.map(\.id))
+    }
+    var selectedURLs: [URL] {
+        var seen = Set<URL>()
+        return selectedNodes.compactMap(\.url).filter { seen.insert($0).inserted }
     }
     var activeCount: Int { transfers.filter { [.downloading, .seeding].contains($0.state) }.count }
 
@@ -305,7 +322,7 @@ import UserNotifications
         }
     }
     func openFile() {
-        guard isProfileReady, !isSwitchingProfile, !terminating, !filePickerOpen, profileEditor == nil else { return }
+        guard isProfileReady, !isSwitchingProfile, !terminating, !filePickerOpen, profileEditor == nil, qbittorrentImport == nil else { return }
         filePickerOpen = true
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.torrent]; panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
         panel.begin { [weak self] response in
@@ -326,7 +343,7 @@ import UserNotifications
         showMagnet = false; magnetText = ""; open([url])
     }
     private func processNextImport() {
-        guard isProfileReady, !isSwitchingProfile, !terminating, !isImporting, profileEditor == nil, pendingImport == nil, !importQueue.isEmpty else { return }
+        guard isProfileReady, !isSwitchingProfile, !terminating, !isImporting, profileEditor == nil, pendingImport == nil, qbittorrentImport == nil, !importQueue.isEmpty else { return }
         let url = importQueue.removeFirst(); isImporting = true
         let engine = self.engine
         importTask = Task {
@@ -361,18 +378,39 @@ import UserNotifications
     }
     func profileEditorDismissed() { processNextImport() }
     func importDismissed() { pendingImport = nil; processNextImport() }
+    var canImportFromQBittorrent: Bool { isProfileReady && canSwitchProfile }
+    func openQBittorrentImport() {
+        guard canImportFromQBittorrent else { return }
+        qbittorrentImport = QBittorrentImportDraft(existingIDs: Set(transfers.map(\.id)))
+    }
+    func finishQBittorrentImport(_ draft: QBittorrentImportDraft) {
+        guard qbittorrentImport === draft, isProfileReady, !isSwitchingProfile, !terminating, !draft.isImporting, !draft.isScanning, !draft.selection.isEmpty else { return }
+        draft.isImporting = true
+        let ratio = settings.defaultSeedRatio
+        perform { engine in await draft.importSelected(engine: engine, defaultSeedRatio: ratio) }
+    }
+    func closeQBittorrentImport() {
+        guard let draft = qbittorrentImport, !draft.isImporting, !draft.isScanning else { return }
+        draft.requestClose()
+        draft.releaseAccess()
+        qbittorrentImport = nil
+    }
+    func qbittorrentImportDismissed() { processNextImport() }
     func startSelection() { let ids = selectedIDs; perform { engine in for id in ids { await engine.start(id) } } }
     func pauseSelection() { let ids = selectedIDs; perform { engine in for id in ids { await engine.pause(id) } } }
     func recheckSelection() { let ids = selectedIDs; perform { engine in for id in ids { await engine.recheck(id) } } }
     func removeSelection() {
         let ids = selectedIDs, delete = deleteFiles
         perform { [self] engine in
-            do { for id in ids { try await engine.remove(id, deleteFiles: delete) }; selection = nil }
+            do { for id in ids { try await engine.remove(id, deleteFiles: delete) } }
             catch { self.error = error.localizedDescription }
         }
         confirmRemoval = false; deleteFiles = false
     }
-    func revealSelection() { if let url = selection?.url { NSWorkspace.shared.activateFileViewerSelecting([url]) } }
+    func revealSelection() {
+        let urls = selectedURLs
+        if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+    }
     func revealLibraryDatabase() {
         guard let activeProfile else { return }
         NSWorkspace.shared.activateFileViewerSelecting([activeProfile.databaseURL])
@@ -399,9 +437,12 @@ import UserNotifications
         for observer in lifecycleObservers { center.removeObserver(observer) }
         lifecycleObservers = []
         await profileTask?.value
+        qbittorrentImport?.requestClose()
+        await qbittorrentImport?.cancelScanning()
         importTask?.cancel()
         await importTask?.value
         for operation in Array(operations.values) { await operation.value }
+        qbittorrentImport?.releaseAccess()
         observation?.cancel()
         uiSaveTask?.cancel()
         await uiSaveTask?.value

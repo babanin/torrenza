@@ -26,6 +26,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: App/Torrenza.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: dev.torrenza.app
         PRODUCT_NAME: Torrenza
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic

@@ -88,7 +88,7 @@ extension TorrentEngine {
             do { try await checkpoint() }
             catch is CancellationError { /* Pausing can stop this tick during a checkpoint. */ }
             catch {
-                for session in sessions.values { session.snapshot.error = "Could not save resume state: \(error.localizedDescription)" }
+                for session in sessions.values where session.record.quarantineError == nil { session.snapshot.error = "Could not save resume state: \(error.localizedDescription)" }
             }
         }
         await schedule()
@@ -101,8 +101,11 @@ extension TorrentEngine {
     func checkpoint(cleanShutdown: Bool = false) async throws {
         guard libraryError == nil else { throw TorrentError.storage("Unreadable saved state was preserved") }
         for session in sessions.values {
-            try await session.disk?.flush()
-            if cleanShutdown, let disk = session.disk { session.record.diskSignatures = try await disk.signatures() }
+            do {
+                try await session.disk?.flush()
+                if cleanShutdown, let disk = session.disk { session.record.diskSignatures = try await disk.signatures() }
+            } catch is CancellationError { throw CancellationError() }
+            catch { await quarantine(session.record.metainfo.id, error: error, persist: false) }
         }
         let contacts = await dht?.contactsSnapshot()
         try await persistence.save(EngineArchive(cleanShutdown: cleanShutdown, settings: configuration, records: sessions.values.map(\.record)), contacts: contacts, statistics: statisticsLoaded ? runStatistics : nil)
@@ -115,7 +118,7 @@ extension TorrentEngine {
         session.record.ownedSignatures = owned.values.sorted { $0.path < $1.path }
     }
 
-    func openDisk(_ session: EngineSession) async throws {
+    func openDisk(_ session: EngineSession, allowNewFiles: Bool = false) async throws {
         guard session.disk == nil else { return }
         guard FileManager.default.fileExists(atPath: session.record.destination.path) else { throw TorrentError.storage("Destination volume or folder is unavailable") }
         if let expected = session.record.volumeUUID {
@@ -126,8 +129,13 @@ extension TorrentEngine {
             let selectedPaths = Set(session.record.metainfo.files.filter { session.record.selectedFiles.contains($0.index) }.map { $0.path.joined(separator: "/") })
             try await TorrentDisk.validateOwnedFiles(destination: session.record.destination, signatures: owned.filter { selectedPaths.contains($0.path) })
         }
-        let disk = try TorrentDisk(metainfo: session.record.metainfo, destination: session.record.destination, selectedFiles: session.record.selectedFiles, allowExisting: true)
+        let generation = session.generation
+        let disk = try TorrentDisk(metainfo: session.record.metainfo, destination: session.record.destination, selectedFiles: session.record.selectedFiles, allowExisting: true, requireExistingPayload: !allowNewFiles, requireExistingSidecars: !allowNewFiles)
         try await disk.prepare()
+        guard session.generation == generation, session.record.quarantineError == nil else {
+            await disk.close()
+            throw CancellationError()
+        }
         session.disk = disk
     }
 
@@ -147,19 +155,19 @@ extension TorrentEngine {
                 try Task.checkCancellation()
                 try await budget.acquire(65_536)
                 do {
-                    session.record.verified[index] = try await disk.verifyPiece(index)
+                    let valid = try await disk.verifyPiece(index)
                     await budget.release(65_536)
+                    guard session.generation == generation, session.record.quarantineError == nil else { return }
+                    session.record.verified[index] = valid
                 } catch { await budget.release(65_536); throw error }
             }
             await refreshProgress(session)
-        } catch {
-            session.snapshot.state = FileManager.default.fileExists(atPath: session.record.destination.path) ? .failed : .unavailable
-            session.snapshot.error = error.localizedDescription
-        }
+        } catch is CancellationError { /* An explicit pause or shutdown cancels checking. */ }
+        catch { await quarantine(id, error: error) }
     }
 
     func refreshProgress(_ session: EngineSession) async {
-        if let disk = session.disk { session.snapshot.files = await disk.fileSnapshots(verified: session.record.verified) }
+        session.snapshot.files = TorrentDisk.fileSnapshots(metainfo: session.record.metainfo, selectedFiles: session.record.selectedFiles, verified: session.record.verified)
         session.snapshot.selectedBytes = session.snapshot.files.filter(\.selected).reduce(0) { $0 + $1.file.length }
         session.snapshot.completedBytes = session.snapshot.files.filter(\.selected).reduce(0) { $0 + $1.verifiedBytes }
     }
@@ -177,7 +185,7 @@ extension TorrentEngine {
         var downloads = 0, seeds = 0
         var hddVolumes: Set<String> = []
         for id in sessions.keys.sorted() {
-            guard let session = sessions[id], session.record.wantedRunning, !session.busy,
+            guard let session = sessions[id], session.record.wantedRunning, !session.busy, session.record.quarantineError == nil,
                   ![.failed, .unavailable, .checking].contains(session.snapshot.state) else { continue }
             if session.selectedComplete && session.ratioReached {
                 if session.snapshot.state != .completed { await stopSession(id, state: .completed) }
@@ -196,17 +204,26 @@ extension TorrentEngine {
             }
             if seed { seeds += 1 } else { downloads += 1; if usesHDDProfile { hddVolumes.insert(volume) } }
             if ![.downloading, .seeding].contains(session.snapshot.state) {
+                let generation = session.generation
+                do { try await openDisk(session) }
+                catch is CancellationError { return }
+                catch { await quarantine(id, error: error); continue }
                 do {
-                    try await openDisk(session)
                     try await ensureListener()
+                    guard session.generation == generation, session.record.wantedRunning, session.record.quarantineError == nil else { continue }
                     session.snapshot.state = seed ? .seeding : .downloading
                     session.nextAnnounce = .distantPast
-                } catch { session.snapshot.state = .failed; session.snapshot.error = error.localizedDescription }
+                } catch {
+                    if session.record.quarantineError == nil {
+                        session.snapshot.state = .failed
+                        session.snapshot.error = error.localizedDescription
+                    }
+                }
             } else { session.snapshot.state = seed ? .seeding : .downloading }
         }
     }
 
-    func stopSession(_ id: String, state: TransferState) async {
+    func stopSession(_ id: String, state: TransferState, flushDisk: Bool = true) async {
         guard let session = sessions[id] else { return }
         session.snapshot.state = state
         session.generation += 1
@@ -223,23 +240,37 @@ extension TorrentEngine {
                 startBackgroundTask { engine in await engine.announce(id, event: .stopped) }
             }
         }
-        try? await session.disk?.flush()
+        if flushDisk {
+            do { try await session.disk?.flush() }
+            catch is CancellationError { }
+            catch { await quarantine(id, error: error) }
+        }
+    }
+
+    /// A payload I/O failure belongs to the torrent, not to a single peer.
+    /// Keep it stopped across launches until the user explicitly retries it.
+    func quarantine(_ id: String, error: Error, persist: Bool = true) async {
+        guard let session = sessions[id] else { return }
+        let message = session.record.quarantineError ?? error.localizedDescription
+        session.record.quarantineError = message
+        session.record.wantedRunning = false
+        session.snapshot.error = message
+        await stopSession(id, state: .failed, flushDisk: false)
+        await session.disk?.close()
+        session.disk = nil
+        session.snapshot.error = message
+        session.snapshot.swarm.connectedPeers = 0
+        session.snapshot.swarm.connectedSeeds = 0
+        if persist { try? await persistence.saveQuarantine(session.record) }
+        updateActivity()
     }
 
     public func volumesChanged() async {
         guard !shuttingDown else { return }
         for id in Array(sessions.keys) {
-            guard let session = sessions[id] else { continue }
+            guard let session = sessions[id], session.record.quarantineError == nil else { continue }
             if !FileManager.default.fileExists(atPath: session.record.destination.path) {
-                await stopSession(id, state: .unavailable)
-                session.snapshot.error = "Destination volume is unavailable"
-                await session.disk?.close(); session.disk = nil
-            } else if session.snapshot.state == .unavailable {
-                await verifyAll(id)
-                if session.snapshot.state != .failed && session.snapshot.state != .unavailable {
-                    session.snapshot.state = session.record.wantedRunning ? .queued : .paused
-                    session.snapshot.error = nil
-                }
+                await quarantine(id, error: TorrentError.storage("Destination volume is unavailable"))
             }
         }
         await schedule()
@@ -290,7 +321,7 @@ extension TorrentEngine {
                 let endpoints = try await client.peers(infoHash: session.record.metainfo.infoHash)
                 addCandidates(id, endpoints)
                 await client.announce(infoHash: session.record.metainfo.infoHash, port: listeningPort)
-            } catch { if session.candidates.isEmpty && session.peers.isEmpty { session.snapshot.error = error.localizedDescription } }
+            } catch { if session.record.quarantineError == nil && session.candidates.isEmpty && session.peers.isEmpty { session.snapshot.error = error.localizedDescription } }
         }
         connectCandidates(id)
     }
@@ -318,6 +349,7 @@ extension TorrentEngine {
                     for key in Array(session.peers.keys) { await disconnect(id, key: key) }
                     session.candidates.removeAll(); session.knownEndpoints.removeAll(); session.lastAttempt.removeAll()
                 }
+                guard session.record.quarantineError == nil else { return }
                 session.snapshot.swarm.tracker = url.absoluteString
                 session.snapshot.swarm.reportedSeeds = response.seeders
                 if let seeds = response.seeders, let leechers = response.leechers { session.snapshot.swarm.reportedPeers = seeds + leechers }
@@ -329,7 +361,7 @@ extension TorrentEngine {
                 session.snapshot.error = nil
                 addCandidates(id, response.peers)
                 return
-            } catch { session.snapshot.error = "Tracker: \(error.localizedDescription)" }
+            } catch { if session.record.quarantineError == nil { session.snapshot.error = "Tracker: \(error.localizedDescription)" } }
         }
         session.nextAnnounce = Date().addingTimeInterval(60)
     }

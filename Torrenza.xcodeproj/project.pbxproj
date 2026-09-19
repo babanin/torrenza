@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		004A9AACA3913E13066B10F8 /* QBittorrentImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD67FCA33EF6DF3F51EAA479 /* QBittorrentImportView.swift */; };
 		0C9A3B01997414B686FFEAAF /* TorrenzaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FD023AE4DE259EE7DB6066 /* TorrenzaApp.swift */; };
 		15E510228C56F31EB118EBBA /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 048C42F93FC101967D9300AD /* ContentView.swift */; };
 		1B02FD79FB6093C292A46E28 /* ToolbarSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A7791A028569491691DB579 /* ToolbarSearchField.swift */; };
@@ -14,6 +15,7 @@
 		54000B8CF0D68EAF65EC05B7 /* UISmokeDiagnostic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001C6E3FF4E74C24E4A00A83 /* UISmokeDiagnostic.swift */; };
 		54A8EAF493A0E16FE293E113 /* TorrentStorage in Frameworks */ = {isa = PBXBuildFile; productRef = FFBF0E93FA42910C91B17434 /* TorrentStorage */; };
 		676733997D22A2D776BC9F17 /* TorrentCore in Frameworks */ = {isa = PBXBuildFile; productRef = 9FF7A4A3A2744ADE20DD64EC /* TorrentCore */; };
+		912EBA14AEB560EDCDDBCA1C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CEB45B4DB7E253EF30236891 /* Assets.xcassets */; };
 		9DCE1BF61B498F3C148D1175 /* TorrentOutlineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F63FF72CE52643A16A9D9184 /* TorrentOutlineView.swift */; };
 		AA97F3C846963A121C5B12A7 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D715535119C7670DC88FCA41 /* AppModel.swift */; };
 		BED8DC7CD9512AAA3F14F60B /* TorrentEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 72190949B17883394B221707 /* TorrentEngine */; };
@@ -25,7 +27,9 @@
 		3A24E17A04CC908BC038CD97 /* Torrenza.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Torrenza.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3A7791A028569491691DB579 /* ToolbarSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolbarSearchField.swift; sourceTree = "<group>"; };
 		A72E80AA97621DE1FEB60E68 /* torrenza */ = {isa = PBXFileReference; lastKnownFileType = folder; name = torrenza; path = .; sourceTree = SOURCE_ROOT; };
+		BD67FCA33EF6DF3F51EAA479 /* QBittorrentImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QBittorrentImportView.swift; sourceTree = "<group>"; };
 		C4FD023AE4DE259EE7DB6066 /* TorrenzaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TorrenzaApp.swift; sourceTree = "<group>"; };
+		CEB45B4DB7E253EF30236891 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D715535119C7670DC88FCA41 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		E0CD872AC480845DFA9A31F0 /* UIState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIState.swift; sourceTree = "<group>"; };
 		F63FF72CE52643A16A9D9184 /* TorrentOutlineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TorrentOutlineView.swift; sourceTree = "<group>"; };
@@ -58,7 +62,9 @@
 			isa = PBXGroup;
 			children = (
 				D715535119C7670DC88FCA41 /* AppModel.swift */,
+				CEB45B4DB7E253EF30236891 /* Assets.xcassets */,
 				048C42F93FC101967D9300AD /* ContentView.swift */,
+				BD67FCA33EF6DF3F51EAA479 /* QBittorrentImportView.swift */,
 				3A7791A028569491691DB579 /* ToolbarSearchField.swift */,
 				F63FF72CE52643A16A9D9184 /* TorrentOutlineView.swift */,
 				C4FD023AE4DE259EE7DB6066 /* TorrenzaApp.swift */,
@@ -92,6 +98,7 @@
 			buildConfigurationList = 011E780463772A3C8F7F0F47 /* Build configuration list for PBXNativeTarget "Torrenza" */;
 			buildPhases = (
 				C9D3DD01E495C17264A30D5E /* Sources */,
+				5426DDAE3CB5E9D9BC0A7299 /* Resources */,
 				4DAF376EC17E1B7F5171F657 /* Frameworks */,
 			);
 			buildRules = (
@@ -144,6 +151,17 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		5426DDAE3CB5E9D9BC0A7299 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				912EBA14AEB560EDCDDBCA1C /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		C9D3DD01E495C17264A30D5E /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -151,6 +169,7 @@
 			files = (
 				AA97F3C846963A121C5B12A7 /* AppModel.swift in Sources */,
 				15E510228C56F31EB118EBBA /* ContentView.swift in Sources */,
+				004A9AACA3913E13066B10F8 /* QBittorrentImportView.swift in Sources */,
 				1B02FD79FB6093C292A46E28 /* ToolbarSearchField.swift in Sources */,
 				9DCE1BF61B498F3C148D1175 /* TorrentOutlineView.swift in Sources */,
 				0C9A3B01997414B686FFEAAF /* TorrenzaApp.swift in Sources */,

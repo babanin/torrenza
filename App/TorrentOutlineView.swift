@@ -14,7 +14,7 @@ struct TorrentOutlineView: NSViewRepresentable {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true; scroll.autohidesScrollers = true
         let outline = NSOutlineView()
         outline.style = .inset; outline.rowSizeStyle = .medium; outline.usesAlternatingRowBackgroundColors = true
-        outline.allowsMultipleSelection = false; outline.autosaveTableColumns = false
+        outline.allowsMultipleSelection = true; outline.autosaveTableColumns = false
         outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         for (id, title, width) in [("name", "Name", 320.0), ("size", "Size", 90.0), ("progress", "Progress / Status", 180.0), ("download", "Download", 95.0), ("upload", "Upload", 95.0), ("seeds", "Seeds", 85.0), ("peers", "Peers", 85.0)] {
             let column = NSTableColumn(identifier: .init(id)); column.title = title; column.width = width; column.minWidth = id == "name" ? 180 : 65
@@ -38,10 +38,16 @@ struct TorrentOutlineView: NSViewRepresentable {
         weak var outline: NSOutlineView?
         var generation = -1
         var expanded: Set<String> = []
-        var selectedID: String?
+        var selectedNodeIDs: Set<String> = []
+        var selectionRevision = 0
         var loadedState = false
         var restoring = false
         var filtering = false
+        private let fileIcons: NSCache<NSString, NSImage> = {
+            let cache = NSCache<NSString, NSImage>()
+            cache.countLimit = 256
+            return cache
+        }()
         let profileID: String?
         var belongsToActiveProfile: Bool { model.activeProfile?.id == profileID }
         var canInteract: Bool { belongsToActiveProfile && model.isProfileReady && !model.isSwitchingProfile }
@@ -57,7 +63,7 @@ struct TorrentOutlineView: NSViewRepresentable {
             self.model = model
             guard let outline else { return }
             if model.didLoadUIState && !loadedState {
-                loadedState = true; expanded = Set(model.uiState.expandedNodeIDs); selectedID = model.uiState.selectedNodeID
+                loadedState = true; expanded = Set(model.uiState.expandedNodeIDs); selectedNodeIDs = Set(model.uiState.effectiveSelectedNodeIDs)
                 restoring = true
                 for (position, id) in model.uiState.columnOrder.enumerated() where position < outline.numberOfColumns {
                     let source = outline.column(withIdentifier: .init(id))
@@ -74,18 +80,26 @@ struct TorrentOutlineView: NSViewRepresentable {
                 filtering = !model.search.isEmpty || model.filter != .all
                 restoring = true
                 outline.reloadData()
-                var restoredSelection: TorrentTreeNode?
+                var restoredSelection: [TorrentTreeNode] = []
                 // Only descend into persisted expanded branches. Filter results reveal their location.
                 for node in model.tree.roots { restore(node, outline: outline, reveal: filtering, depth: 0) }
-                if let selectedID {
-                    for row in 0..<outline.numberOfRows where (outline.item(atRow: row) as? TorrentTreeNode)?.id == selectedID { outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); restoredSelection = outline.item(atRow: row) as? TorrentTreeNode; break }
+                var selectedRows = IndexSet()
+                for row in 0..<outline.numberOfRows {
+                    if let node = outline.item(atRow: row) as? TorrentTreeNode, selectedNodeIDs.contains(node.id) {
+                        selectedRows.insert(row); restoredSelection.append(node)
+                    }
                 }
+                outline.selectRowIndexes(selectedRows, byExtendingSelection: false)
+                // Hidden rows must not remain targets of toolbar or menu actions.
+                selectedNodeIDs = Set(restoredSelection.map(\.id))
                 restoring = false
                 let capturedGeneration = generation
-                if model.selection !== restoredSelection {
+                selectionRevision += 1
+                let capturedRevision = selectionRevision
+                if model.selectedNodes.count != restoredSelection.count || zip(model.selectedNodes, restoredSelection).contains(where: { $0 !== $1 }) {
                     Task { @MainActor [weak self] in
-                        guard let self, self.canInteract, self.generation == capturedGeneration else { return }
-                        model.selection = restoredSelection
+                        guard let self, self.canInteract, self.generation == capturedGeneration, self.selectionRevision == capturedRevision else { return }
+                        model.selectedNodes = restoredSelection
                     }
                 }
             } else if outline.window?.isVisible ?? false {
@@ -116,12 +130,13 @@ struct TorrentOutlineView: NSViewRepresentable {
             let cell: NSTableCellView
             if let reused = outlineView.makeView(withIdentifier: cellID, owner: self) as? NSTableCellView { cell = reused }
             else {
-                cell = NSTableCellView(); cell.identifier = cellID
+                cell = cellID.rawValue == "name" ? TorrentNameCellView() : NSTableCellView(); cell.identifier = cellID
                 let text = NSTextField(labelWithString: ""); text.translatesAutoresizingMaskIntoConstraints = false; text.lineBreakMode = .byTruncatingMiddle; text.font = .systemFont(ofSize: NSFont.systemFontSize)
                 cell.addSubview(text); cell.textField = text
                 if cellID.rawValue == "name" {
                     let icon = NSImageView(); icon.translatesAutoresizingMaskIntoConstraints = false; cell.addSubview(icon); cell.imageView = icon
                     NSLayoutConstraint.activate([icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2), icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16), text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6)])
+                    (cell as? TorrentNameCellView)?.installBadge(relativeTo: icon)
                 } else { text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4).isActive = true; text.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular) }
                 NSLayoutConstraint.activate([text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             }
@@ -133,15 +148,16 @@ struct TorrentOutlineView: NSViewRepresentable {
             switch cellID.rawValue {
             case "name":
                 value = node.name; tooltip = node.url?.path ?? node.name
-                let symbol: String
-                switch node.kind { case .volume: symbol = "externaldrive"; case .folder: symbol = "folder"; case .torrent: symbol = torrent?.state == .seeding ? "arrow.up.circle" : "arrow.down.circle"; case .file: symbol = "doc"; case .resolving: symbol = "network" }
-                cell.imageView?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+                cell.imageView?.image = icon(for: node, torrent: torrent)
+                let badgeState = torrent?.isMultiFile == false ? torrent?.state : nil
+                (cell as? TorrentNameCellView)?.setTransferState(badgeState)
+                if let badgeState { tooltip = "Single-file torrent · \(badgeState.rawValue.capitalized)\n\(tooltip ?? node.name)" }
             case "size":
                 if case .file(let id, let index) = node.kind, let file = model.tree.file(transferID: id, index: index) { value = byteString(file.file.length) }
                 else { value = byteString(metrics.size) }
             case "progress":
                 if let torrent { value = "\(torrent.state.rawValue.capitalized) · \(Int(torrent.progress * 100))%"; tooltip = torrent.error }
-                else if unavailable { value = "Unavailable"; tooltip = "Reconnect the destination volume to resume its transfers." }
+                else if unavailable { value = "Unavailable"; tooltip = "Reconnect the destination volume, then choose Resume or Recheck for the affected torrents." }
                 else if case .file(let id, let index) = node.kind, let file = model.tree.file(transferID: id, index: index), !file.selected { value = "Skipped" }
                 else { value = "\(Int(metrics.progress * 100))%" }
             case "download": value = rateString(metrics.downloadRate)
@@ -164,11 +180,41 @@ struct TorrentOutlineView: NSViewRepresentable {
             cell.setAccessibilityHelp(tooltip)
             return cell
         }
+        private func icon(for node: TorrentTreeNode, torrent: TransferSnapshot?) -> NSImage? {
+            let symbol: String
+            switch node.kind {
+            case .file:
+                return fileIcon(for: node)
+            case .torrent:
+                if torrent?.isMultiFile == false, node.url != nil { return fileIcon(for: node) }
+                symbol = torrent?.state == .seeding ? "arrow.up.circle" : "arrow.down.circle"
+            case .volume: symbol = "externaldrive"
+            case .folder: symbol = "folder"
+            case .resolving: symbol = "network"
+            }
+            return NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        }
+        private func fileIcon(for node: TorrentTreeNode) -> NSImage? {
+            guard let url = node.url else { return NSImage(systemSymbolName: "doc", accessibilityDescription: nil) }
+            let key = url.path as NSString
+            if let cached = fileIcons.object(forKey: key) { return cached }
+            // Ask macOS for the file's icon, including its associated application's artwork.
+            // Cache it so transfer progress updates do not repeatedly query the filesystem.
+            let image = NSWorkspace.shared.icon(forFile: url.path)
+            fileIcons.setObject(image, forKey: key)
+            return image
+        }
         func outlineViewSelectionDidChange(_ notification: Notification) {
             guard canInteract, let outline, !restoring else { return }
-            model.selection = outline.selectedRow >= 0 ? outline.item(atRow: outline.selectedRow) as? TorrentTreeNode : nil
-            selectedID = model.selection?.id
-            if !filtering && persistsState { model.uiState.selectedNodeID = selectedID }
+            selectionRevision += 1
+            model.selectedNodes = outline.selectedRowIndexes.compactMap { outline.item(atRow: $0) as? TorrentTreeNode }
+            selectedNodeIDs = Set(model.selectedNodes.map(\.id))
+            if !filtering && persistsState {
+                var state = model.uiState
+                state.selectedNodeIDs = model.selectedNodes.map(\.id)
+                state.selectedNodeID = state.selectedNodeIDs?.first
+                model.uiState = state
+            }
         }
         func outlineViewItemDidExpand(_ notification: Notification) { rememberExpansion(notification, expanding: true) }
         func outlineViewItemDidCollapse(_ notification: Notification) { rememberExpansion(notification, expanding: false) }
@@ -194,25 +240,79 @@ struct TorrentOutlineView: NSViewRepresentable {
         @objc func doubleClick(_ sender: NSOutlineView) {
             guard canInteract, sender.clickedRow >= 0, let node = sender.item(atRow: sender.clickedRow) as? TorrentTreeNode else { return }
             if node.expandable { if sender.isItemExpanded(node) { sender.collapseItem(node) } else { sender.expandItem(node) } }
-            else { model.revealSelection() }
+            else if let url = node.url, !NSWorkspace.shared.open(url) {
+                model.error = "Could not open \(url.lastPathComponent)."
+            }
         }
         func menuNeedsUpdate(_ menu: NSMenu) {
             menu.removeAllItems()
             guard canInteract, let outline else { return }
-            if outline.clickedRow >= 0 { outline.selectRowIndexes(IndexSet(integer: outline.clickedRow), byExtendingSelection: false) }
-            guard model.selection != nil else { return }
-            if case .file = model.selection?.kind {
-                let item = NSMenuItem(title: "Reveal in Finder", action: #selector(reveal), keyEquivalent: ""); item.target = self; menu.addItem(item); return
-            }
+            guard prepareContextSelection(row: outline.clickedRow) else { return }
             for (title, action) in [("Start", #selector(start)), ("Pause", #selector(pause)), ("Recheck", #selector(recheck)), ("Reveal in Finder", #selector(reveal)), ("Remove…", #selector(remove))] {
                 let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
-                item.isEnabled = title == "Reveal in Finder" ? model.selection?.url != nil : !model.selectedIDs.isEmpty
+                item.isEnabled = title == "Reveal in Finder" ? !model.selectedURLs.isEmpty : !model.selectedIDs.isEmpty
             }
+        }
+        @discardableResult func prepareContextSelection(row: Int) -> Bool {
+            guard canInteract, let outline, row >= 0, row < outline.numberOfRows else { return false }
+            if !outline.selectedRowIndexes.contains(row) {
+                outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
+            return !model.selectedNodes.isEmpty
         }
         @objc func start() { guard canInteract else { return }; model.startSelection() }
         @objc func pause() { guard canInteract else { return }; model.pauseSelection() }
         @objc func recheck() { guard canInteract else { return }; model.recheckSelection() }
         @objc func reveal() { guard canInteract else { return }; model.revealSelection() }
         @objc func remove() { guard canInteract else { return }; model.confirmRemoval = true }
+    }
+}
+
+/// A separate overlay preserves the native file artwork and updates independently of its cache.
+private final class TorrentNameCellView: NSTableCellView {
+    private let statusBadge = NSImageView()
+    private var displayedState: TransferState?
+
+    func installBadge(relativeTo icon: NSImageView) {
+        statusBadge.translatesAutoresizingMaskIntoConstraints = false
+        statusBadge.imageScaling = .scaleNone
+        statusBadge.contentTintColor = .white
+        statusBadge.wantsLayer = true
+        statusBadge.layer?.cornerRadius = 5
+        statusBadge.layer?.borderWidth = 0.75
+        statusBadge.layer?.borderColor = NSColor.white.cgColor
+        statusBadge.isHidden = true
+        statusBadge.setAccessibilityElement(false)
+        addSubview(statusBadge)
+        NSLayoutConstraint.activate([
+            statusBadge.widthAnchor.constraint(equalToConstant: 10),
+            statusBadge.heightAnchor.constraint(equalToConstant: 10),
+            statusBadge.trailingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 3),
+            statusBadge.bottomAnchor.constraint(equalTo: icon.bottomAnchor, constant: 2)
+        ])
+    }
+
+    func setTransferState(_ state: TransferState?) {
+        // Reused cells must shed the badge when they become an ordinary file or folder.
+        statusBadge.isHidden = state == nil
+        guard state != displayedState else { return }
+        displayedState = state
+        guard let state else { statusBadge.image = nil; return }
+        let symbol: String
+        let color: NSColor
+        switch state {
+        case .downloading: symbol = "arrow.down"; color = .systemBlue
+        case .seeding: symbol = "arrow.up"; color = .systemGreen
+        case .paused: symbol = "pause.fill"; color = .systemGray
+        case .queued: symbol = "clock"; color = .systemGray
+        case .checking: symbol = "magnifyingglass"; color = .systemPurple
+        case .completed: symbol = "checkmark"; color = .systemGreen
+        case .unavailable: symbol = "eject.fill"; color = .systemOrange
+        case .failed: symbol = "exclamationmark"; color = .systemRed
+        case .resolving: symbol = "ellipsis"; color = .systemGray
+        }
+        statusBadge.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 6, weight: .bold))
+        statusBadge.layer?.backgroundColor = color.cgColor
     }
 }

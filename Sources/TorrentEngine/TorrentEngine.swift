@@ -61,15 +61,17 @@ final class EngineSession {
     var previousDownloaded: Int64 = 0
     var previousUploaded: Int64 = 0
     var lastRate = Date()
-    let volumeKey: String
-    let automaticHDD: Bool
+    private lazy var volume = VolumeCapabilities.inspect(destination: record.destination)
+    var volumeKey: String { volume.identity }
+    var automaticHDD: Bool { volume.isSolidState != true }
     init(record: EngineRecord) {
         self.record = record
-        let volume = VolumeCapabilities.inspect(destination: record.destination)
-        volumeKey = volume.identity
-        automaticHDD = volume.isSolidState != true
         wanted = Self.wantedPieces(record)
         snapshot = TransferSnapshot(id: record.metainfo.id, name: record.metainfo.name, destination: record.destination, isMultiFile: record.metainfo.isMultiFile, state: record.wantedRunning ? .queued : .paused, files: record.metainfo.files.filter { !$0.isPadding }.map { FileSnapshot(file: $0, selected: record.selectedFiles.contains($0.index)) }, selectedBytes: record.metainfo.files.filter { record.selectedFiles.contains($0.index) }.reduce(0) { $0 + $1.length }, downloadedBytes: record.downloaded, uploadedBytes: record.uploaded, seedRatio: record.seedRatio, trackers: record.metainfo.trackerTiers.flatMap { $0 }.map(\.absoluteString))
+        if let error = record.quarantineError {
+            snapshot.state = .failed
+            snapshot.error = error
+        }
         previousDownloaded = record.downloaded; previousUploaded = record.uploaded
     }
     static func wantedPieces(_ record: EngineRecord) -> PieceBitset {
@@ -177,11 +179,19 @@ public actor TorrentEngine {
     }
     public func inspect(torrent: Data) throws -> TorrentMetainfo { try MetainfoParser.parse(torrent) }
 
-    public func add(metainfo: TorrentMetainfo, destination: URL, selectedFiles: Set<Int>, seedRatio: Double? = 1, allowExisting: Bool = false) async throws -> String {
+    /// Providing savedVerifiedPieces explicitly trusts another client's piece status
+    /// without hashing. It requires existing payload and a paused import; pieces that
+    /// depend on unselected payload are cleared because foreign partfiles are not reused.
+    public func add(metainfo: TorrentMetainfo, destination: URL, selectedFiles: Set<Int>, seedRatio: Double? = 1, allowExisting: Bool = false, startPaused: Bool = false, downloadedBytes: Int64 = 0, uploadedBytes: Int64 = 0, savedVerifiedPieces: PieceBitset? = nil) async throws -> String {
         guard !shuttingDown else { throw CancellationError() }
         guard libraryError == nil else { throw TorrentError.storage("Saved transfers could not be read; repair or move the saved state before adding transfers") }
+        guard downloadedBytes >= 0, uploadedBytes >= 0 else { throw TorrentError.invalidMetainfo("Transfer history cannot contain negative byte counts") }
         try Self.validateMetainfo(metainfo)
-        try await ensureStatistics()
+        if let savedVerifiedPieces {
+            guard allowExisting, startPaused, savedVerifiedPieces.count == metainfo.pieceHashes.count else {
+                throw TorrentError.invalidMetainfo("Saved piece status requires a paused import of existing files and a matching piece count")
+            }
+        }
         guard sessions[metainfo.id] == nil else { throw TorrentError.storage("This torrent is already in your library") }
         let valid = Set(metainfo.files.filter { !$0.isPadding }.map(\.index))
         guard !selectedFiles.isEmpty, selectedFiles.isSubset(of: valid) else { throw TorrentError.storage("Choose at least one valid file") }
@@ -194,17 +204,39 @@ public actor TorrentEngine {
         }
         let scoped = destination.startAccessingSecurityScopedResource()
         let bookmark = try? destination.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
-        var record = EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: 0, uploaded: 0, wantedRunning: true, verified: PieceBitset(count: metainfo.pieceHashes.count))
+        var record = EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloadedBytes, uploaded: uploadedBytes, wantedRunning: !startPaused, verified: PieceBitset(count: metainfo.pieceHashes.count))
         record.volumeUUID = try? destination.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
         let session = EngineSession(record: record)
         session.securityScoped = scoped
         do {
-            let disk = try TorrentDisk(metainfo: metainfo, destination: destination, selectedFiles: selectedFiles, allowExisting: allowExisting)
+            if savedVerifiedPieces != nil {
+                try await Task.detached(priority: .utility) {
+                    try QBittorrentImport.preflight(metainfo: metainfo, destination: destination, selectedFiles: selectedFiles)
+                }.value
+            }
+            try await ensureStatistics()
+            let disk = try TorrentDisk(metainfo: metainfo, destination: destination, selectedFiles: selectedFiles, allowExisting: allowExisting, requireExistingPayload: savedVerifiedPieces != nil)
             try await disk.prepare()
             session.disk = disk
             try await updateOwnership(session)
             sessions[metainfo.id] = session
-            if allowExisting { await verifyAll(metainfo.id); if session.snapshot.state == .checking { session.snapshot.state = .queued } }
+            if var savedVerifiedPieces {
+                // Only selected payload is imported. Pieces touching skipped files may
+                // depend on qBittorrent's partfile, which is not available to our disk.
+                for index in 0..<savedVerifiedPieces.count where !session.wanted[index] {
+                    savedVerifiedPieces[index] = false
+                }
+                for file in metainfo.files where !file.isPadding && !selectedFiles.contains(file.index) && file.length > 0 {
+                    let first = Int(file.offset / Int64(metainfo.pieceLength))
+                    let last = Int((file.offset + file.length - 1) / Int64(metainfo.pieceLength))
+                    for index in first...last { savedVerifiedPieces[index] = false }
+                }
+                session.record.verified = savedVerifiedPieces
+                await refreshProgress(session)
+            } else if allowExisting {
+                await verifyAll(metainfo.id)
+                if session.snapshot.state == .checking { session.snapshot.state = session.record.wantedRunning ? .queued : .paused }
+            }
             try await checkpoint()
             startTicker()
             await schedule()
@@ -220,6 +252,7 @@ public actor TorrentEngine {
         guard !shuttingDown else { return }
         guard let session = sessions[id] else { return }
         session.record.wantedRunning = true
+        session.record.quarantineError = nil
         session.snapshot.error = nil
         if ![.downloading, .seeding, .checking].contains(session.snapshot.state) { session.snapshot.state = .queued }
         startTicker()
@@ -231,7 +264,7 @@ public actor TorrentEngine {
         guard !shuttingDown else { return }
         guard let session = sessions[id] else { return }
         session.record.wantedRunning = false
-        await stopSession(id, state: .paused)
+        await stopSession(id, state: session.record.quarantineError == nil ? .paused : .failed)
         try? await checkpoint()
         await schedule()
     }
@@ -242,10 +275,15 @@ public actor TorrentEngine {
         session.record.wantedRunning = false
         await stopSession(id, state: .paused)
         if deleteFiles {
-            guard let disk = session.disk else { throw TorrentError.storage("Destination is unavailable; downloaded files were preserved") }
-            try await updateOwnership(session)
-            try await TorrentDisk.removeOwnedFiles(destination: session.record.destination, signatures: session.record.ownedSignatures ?? [])
-            await disk.close()
+            do {
+                try await openDisk(session)
+                try await updateOwnership(session)
+                try await TorrentDisk.removeOwnedFiles(destination: session.record.destination, signatures: session.record.ownedSignatures ?? [])
+                await session.disk?.close()
+            } catch {
+                await quarantine(id, error: error)
+                throw error
+            }
         }
         if session.securityScoped { session.record.destination.stopAccessingSecurityScopedResource() }
         sessions.removeValue(forKey: id)
@@ -256,9 +294,11 @@ public actor TorrentEngine {
     public func recheck(_ id: String) async {
         guard !shuttingDown else { return }
         guard let session = sessions[id] else { return }
+        session.record.quarantineError = nil
+        session.snapshot.error = nil
         await stopSession(id, state: .checking)
         await verifyAll(id)
-        if session.snapshot.state != .failed { session.snapshot.state = session.record.wantedRunning ? .queued : .paused }
+        if session.record.quarantineError == nil && ![.failed, .unavailable].contains(session.snapshot.state) { session.snapshot.state = session.record.wantedRunning ? .queued : .paused }
         try? await checkpoint()
         await schedule()
     }
@@ -283,18 +323,31 @@ public actor TorrentEngine {
                 try await TorrentDisk.validateOwnedFiles(destination: session.record.destination, signatures: [owned])
             }
         }
-        await stopSession(id, state: .paused)
-        try await updateOwnership(session)
-        await session.disk?.close()
-        session.record.selectedFiles = selectedFiles
-        session.wanted = EngineSession.wantedPieces(session.record)
-        session.disk = nil
-        try await openDisk(session)
-        try await updateOwnership(session)
-        await verifyAll(id)
-        session.snapshot.state = session.record.wantedRunning ? .queued : .paused
-        try await checkpoint()
-        await schedule()
+        do {
+            await stopSession(id, state: .paused)
+            // The current selection must still exist before adding new files;
+            // only newly selected payloads may be created below.
+            try await openDisk(session)
+            try await updateOwnership(session)
+            await session.disk?.close()
+            session.record.selectedFiles = selectedFiles
+            session.wanted = EngineSession.wantedPieces(session.record)
+            session.disk = nil
+            try await openDisk(session, allowNewFiles: true)
+            try await updateOwnership(session)
+            await verifyAll(id)
+            if let error = session.record.quarantineError {
+                session.snapshot.state = .failed
+                session.snapshot.error = error
+            } else if ![.failed, .unavailable].contains(session.snapshot.state) {
+                session.snapshot.state = session.record.wantedRunning ? .queued : .paused
+            }
+            try await checkpoint()
+            await schedule()
+        } catch {
+            await quarantine(id, error: error)
+            throw error
+        }
     }
 
     public func updateSettings(_ settings: EngineSettings) async {
@@ -353,7 +406,9 @@ public actor TorrentEngine {
             preparedArchive = nil
             activating = false
             startTicker()
-            await schedule()
+            // Publish the restored library before opening any active payloads.
+            // A slow or disconnected destination must not hold the startup UI.
+            startBackgroundTask { engine in await engine.schedule() }
         } catch {
             // Prevent a failed activation from replacing the saved archive.
             libraryError = TransferSnapshot(id: "library-error", name: "Saved transfers", state: .failed, error: "Saved state was preserved: \(error.localizedDescription)")
@@ -383,24 +438,17 @@ public actor TorrentEngine {
             var scoped = false
             if let bookmark = record.bookmark {
                 var stale = false
-                if let resolved = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale) {
+                if let resolved = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale) {
                     record.destination = resolved; scoped = resolved.startAccessingSecurityScopedResource()
                     if stale { record.bookmark = try? resolved.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil) }
                 }
             }
             let session = EngineSession(record: record); session.securityScoped = scoped
             sessions[record.metainfo.id] = session
-            var reused = false
-            if archive.cleanShutdown == true, let signatures = record.diskSignatures {
-                do {
-                    try await openDisk(session)
-                    if let disk = session.disk, try await disk.signatures() == signatures {
-                        await refreshProgress(session); reused = true
-                    }
-                } catch { /* Changed destinations are verified below. */ }
-            }
-            if !reused { await verifyAll(record.metainfo.id) }
-            if session.snapshot.state != .failed && session.snapshot.state != .unavailable { session.snapshot.state = record.wantedRunning ? .queued : .paused }
+            // Startup trusts the saved piece map, including after an interrupted
+            // session. Payload access is deferred until the torrent actually runs;
+            // explicit Recheck remains available when verification is desired.
+            await refreshProgress(session)
         }
     }
 
@@ -413,7 +461,7 @@ public actor TorrentEngine {
     }
     public func resume() async {
         guard !shuttingDown else { return }
-        for id in suspended { if let session = sessions[id] { session.snapshot.state = .queued } }
+        for id in suspended { if let session = sessions[id], session.record.quarantineError == nil { session.snapshot.state = .queued } }
         suspended.removeAll()
         await schedule()
     }
@@ -443,7 +491,7 @@ public actor TorrentEngine {
     public func resumeAfterFailedProfileSwitch() async {
         dht = nil
         shuttingDown = false
-        for session in sessions.values where session.record.wantedRunning {
+        for session in sessions.values where session.record.wantedRunning && session.record.quarantineError == nil {
             session.snapshot.state = .queued
         }
         needsDirtyCheckpoint = true

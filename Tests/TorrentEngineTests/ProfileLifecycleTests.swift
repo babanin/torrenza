@@ -5,6 +5,127 @@ import TorrentStorage
 @testable import TorrentEngine
 
 extension EngineTests {
+    func testExpandingRestoredSelectionDoesNotRecreateMissingOwnedPayload() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let base = fixture(Data(repeating: 42, count: 65_536), name: "bundle")
+        let meta = TorrentMetainfo(infoHash: base.infoHash, rawInfo: base.rawInfo, name: base.name, pieceLength: base.pieceLength, pieceHashes: base.pieceHashes, files: [
+            TorrentFile(index: 0, path: ["bundle", "first.bin"], length: 32_768, offset: 0),
+            TorrentFile(index: 1, path: ["bundle", "second.bin"], length: 32_768, offset: 32_768)
+        ], trackerTiers: [], isPrivate: true, isMultiFile: true)
+        let state = root.appendingPathComponent("state")
+        let first = TorrentEngine(stateDirectory: state)
+        _ = try await first.add(metainfo: meta, destination: root, selectedFiles: [0], startPaused: true)
+        try await first.shutdownForProfileSwitch()
+        let firstURL = root.appendingPathComponent("bundle/first.bin")
+        try FileManager.default.removeItem(at: firstURL)
+
+        let restored = TorrentEngine(stateDirectory: state)
+        try await restored.prepareForActivation()
+        try await restored.activatePreparedProfile()
+        do {
+            try await restored.setSelectedFiles(meta.id, selectedFiles: [0, 1])
+            XCTFail("Missing existing data must fail before creating newly selected files")
+        } catch { }
+        let snapshot = await restored.currentSnapshots().first
+        XCTAssertEqual(snapshot?.state, .failed)
+        XCTAssertNotNil(snapshot?.error)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("bundle/second.bin").path))
+        try await restored.shutdownForProfileSwitch()
+    }
+
+    func testRestoredPausedTorrentCanDeleteItsOwnedFiles() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let payload = Data(repeating: 42, count: 32_768)
+        let meta = fixture(payload)
+        let payloadURL = root.appendingPathComponent(meta.name)
+        let unrelatedURL = root.appendingPathComponent("unrelated.txt")
+        try payload.write(to: payloadURL)
+        try Data("Keep me".utf8).write(to: unrelatedURL)
+        let state = root.appendingPathComponent("state")
+        let first = TorrentEngine(stateDirectory: state)
+        _ = try await first.add(metainfo: meta, destination: root, selectedFiles: [0], seedRatio: nil, allowExisting: true, startPaused: true)
+        try await first.shutdownForProfileSwitch()
+
+        let restored = TorrentEngine(stateDirectory: state)
+        try await restored.prepareForActivation()
+        try await restored.activatePreparedProfile()
+        let diskOpened = await restored.hasOpenPayloadForProfileTest(meta.id)
+        XCTAssertFalse(diskOpened)
+        try await restored.remove(meta.id, deleteFiles: true)
+        let snapshots = await restored.currentSnapshots()
+        XCTAssertTrue(snapshots.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: payloadURL.path))
+        XCTAssertEqual(try Data(contentsOf: unrelatedURL), Data("Keep me".utf8))
+        try await restored.shutdownForProfileSwitch()
+    }
+
+    func testInterruptedProfileRestoresSavedProgressWithoutOpeningPayload() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let meta = fixture(Data(repeating: 42, count: 65_536))
+        let changedPayload = Data(repeating: 0, count: 65_536)
+        try changedPayload.write(to: root.appendingPathComponent(meta.name))
+        var verified = PieceBitset(count: meta.pieceHashes.count)
+        verified[0] = true
+        let record = EngineRecord(metainfo: meta, destination: root, selectedFiles: [0], seedRatio: nil, downloaded: 32_768, uploaded: 17, wantedRunning: false, verified: verified)
+        let engine = TorrentEngine(stateDirectory: root.appendingPathComponent("state"))
+        try await engine.persistence.save(EngineArchive(cleanShutdown: false, settings: EngineSettings(), records: [record]))
+        try await engine.prepareForActivation()
+        try await engine.activatePreparedProfile()
+        let snapshot = await engine.currentSnapshots().first
+        let diskOpened = await engine.hasOpenPayloadForProfileTest(meta.id)
+        XCTAssertEqual(snapshot?.state, .paused)
+        XCTAssertEqual(snapshot?.completedBytes, 32_768)
+        XCTAssertEqual(snapshot?.files.first?.verifiedBytes, 32_768)
+        XCTAssertEqual(snapshot?.downloadedBytes, 32_768)
+        XCTAssertEqual(snapshot?.uploadedBytes, 17)
+        XCTAssertFalse(diskOpened)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(meta.name)), changedPayload)
+        try await engine.shutdownForProfileSwitch()
+    }
+
+    func testMissingPausedPayloadIsDeferredUntilStartAndThenQuarantined() async throws {
+        for cleanShutdown in [false, true] {
+            let root = try root()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let meta = fixture(Data(repeating: 42, count: 65_536))
+            var verified = PieceBitset(count: meta.pieceHashes.count)
+            for piece in 0..<verified.count { verified[piece] = true }
+            let record = EngineRecord(metainfo: meta, destination: root, selectedFiles: [0], seedRatio: nil, downloaded: 65_536, uploaded: 0, wantedRunning: false, verified: verified)
+            let state = root.appendingPathComponent("state")
+            let engine = TorrentEngine(stateDirectory: state)
+            try await engine.persistence.save(EngineArchive(cleanShutdown: cleanShutdown, settings: EngineSettings(), records: [record]))
+            try await engine.prepareForActivation()
+            try await engine.activatePreparedProfile()
+            let snapshot = await engine.currentSnapshots().first
+            let diskOpened = await engine.hasOpenPayloadForProfileTest(meta.id)
+            XCTAssertEqual(snapshot?.state, .paused)
+            XCTAssertEqual(snapshot?.completedBytes, 65_536)
+            XCTAssertNil(snapshot?.error)
+            XCTAssertFalse(diskOpened)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(meta.name).path))
+
+            await engine.start(meta.id)
+            let failed = await engine.currentSnapshots().first
+            XCTAssertEqual(failed?.state, .failed)
+            XCTAssertNotNil(failed?.error)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(meta.name).path))
+            try await engine.shutdownForProfileSwitch()
+
+            let restored = TorrentEngine(stateDirectory: state)
+            try await restored.prepareForActivation()
+            try await restored.activatePreparedProfile()
+            let quarantined = await restored.currentSnapshots().first
+            XCTAssertEqual(quarantined?.state, .failed)
+            XCTAssertEqual(quarantined?.error, failed?.error)
+            XCTAssertEqual(quarantined?.completedBytes, 65_536)
+            try await restored.shutdownForProfileSwitch()
+        }
+    }
+
     func testProfilesIsolateTransfersSettingsStatisticsAndUI() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -111,6 +232,10 @@ extension EngineTests {
 }
 
 extension TorrentEngine {
+    func hasOpenPayloadForProfileTest(_ id: String) -> Bool {
+        sessions[id]?.disk != nil
+    }
+
     func queueFinalPayloadForProfileTest(downloaded: Int64, uploaded: Int64) {
         startBackgroundTask { engine in
             // Mimics an in-flight network send completing as cancellation lands.

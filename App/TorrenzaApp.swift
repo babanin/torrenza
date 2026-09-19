@@ -15,7 +15,9 @@ import SwiftUI
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open Torrent…") { model.openFile() }.keyboardShortcut("o").disabled(!model.isProfileReady || model.isSwitchingProfile)
-                Button("Open Magnet Link…") { model.showMagnet = true }.keyboardShortcut("o", modifiers: [.command, .shift]).disabled(!model.isProfileReady || model.isSwitchingProfile)
+                Button("Open Magnet Link…") { model.showMagnet = true }.keyboardShortcut("o", modifiers: [.command, .shift]).disabled(!model.isProfileReady || model.isSwitchingProfile || model.qbittorrentImport != nil)
+                Divider()
+                Button("Import from qBittorrent…", action: model.openQBittorrentImport).disabled(!model.canImportFromQBittorrent)
             }
             CommandGroup(after: .textEditing) {
                 Button("Find Torrents and Files") { model.searchFocusRequest += 1 }
@@ -30,7 +32,7 @@ import SwiftUI
                 Button("Pause") { model.pauseSelection() }.disabled(model.selectedIDs.isEmpty || !model.isProfileReady || model.isSwitchingProfile).keyboardShortcut("p")
                 Button("Recheck") { model.recheckSelection() }.disabled(model.selectedIDs.isEmpty || !model.isProfileReady || model.isSwitchingProfile)
                 Divider()
-                Button("Reveal in Finder") { model.revealSelection() }.disabled(model.selection?.url == nil).keyboardShortcut("r", modifiers: [.command, .shift])
+                Button("Reveal in Finder") { model.revealSelection() }.disabled(model.selectedURLs.isEmpty).keyboardShortcut("r", modifiers: [.command, .shift])
                 Button("Remove…") { model.confirmRemoval = true }.disabled(model.selectedIDs.isEmpty || !model.isProfileReady || model.isSwitchingProfile).keyboardShortcut(.delete, modifiers: .command)
             }
             CommandGroup(after: .toolbar) { Button("Toggle Inspector") { model.showInspector.toggle() }.keyboardShortcut("i", modifiers: [.command, .option]) }

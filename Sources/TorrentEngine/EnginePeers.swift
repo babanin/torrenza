@@ -60,12 +60,13 @@ extension TorrentEngine {
     }
 
     func register(_ id: String, connection: PeerConnection, endpoint: PeerEndpoint, handshake: PeerHandshake, isOutbound: Bool = true) async throws {
-        guard !shuttingDown, let session = sessions[id] else { await connection.close(); return }
+        guard !shuttingDown, let session = sessions[id], session.record.quarantineError == nil, [.downloading, .seeding].contains(session.snapshot.state) else { await connection.close(); return }
+        let generation = session.generation
         let cap = max(32_768, session.record.verified.bytes.count + 1)
         guard await budget.tryAcquire(cap * 4) else { await connection.close(); return }
-        guard !shuttingDown else { await budget.release(cap * 4); await connection.close(); return }
+        guard !shuttingDown, session.generation == generation, session.record.quarantineError == nil, [.downloading, .seeding].contains(session.snapshot.state) else { await budget.release(cap * 4); await connection.close(); return }
         await connection.setMaximumFrameLength(cap)
-        guard !shuttingDown else { await budget.release(cap * 4); await connection.close(); return }
+        guard !shuttingDown, session.generation == generation, session.record.quarantineError == nil, [.downloading, .seeding].contains(session.snapshot.state) else { await budget.release(cap * 4); await connection.close(); return }
         let key = UUID()
         session.peers[key] = ActivePeer(connection: connection, endpoint: endpoint, availability: PieceBitset(count: session.wanted.count))
         session.peers[key]?.receiveReservation = cap * 4
@@ -246,6 +247,8 @@ extension TorrentEngine {
 
     func receiveBlock(_ id: String, key: UUID, index: Int, begin: Int, block: Data) async throws {
         guard let session = sessions[id], let disk = session.disk else { return }
+        let generation = session.generation
+        guard session.record.quarantineError == nil else { return }
         let request = BlockRequest(piece: index, begin: begin, length: block.count)
         guard session.peers[key]?.pending.removeValue(forKey: request) != nil else { return }
         session.record.downloaded += Int64(block.count)
@@ -259,17 +262,18 @@ extension TorrentEngine {
             await budget.release(block.count)
         } catch {
             await budget.release(block.count)
-            session.snapshot.error = error.localizedDescription
-            await stopSession(id, state: .failed)
+            if !(error is CancellationError) { await quarantine(id, error: error) }
             throw error
         }
-        guard let work = session.pieceWork[index], !work.verifying,
+        guard session.generation == generation, session.record.quarantineError == nil,
+              let work = session.pieceWork[index], !work.verifying,
               work.received.count == (session.record.metainfo.lengthOfPiece(index) + 16_383) / 16_384 else { return }
         session.pieceWork[index]?.verifying = true
         try await budget.acquire(65_536)
         let valid: Bool
         do { valid = try await disk.verifyPiece(index); await budget.release(65_536) }
-        catch { await budget.release(65_536); session.pieceWork.removeValue(forKey: index); session.snapshot.error = error.localizedDescription; await stopSession(id, state: .failed); throw error }
+        catch { await budget.release(65_536); session.pieceWork.removeValue(forKey: index); if !(error is CancellationError) { await quarantine(id, error: error) }; throw error }
+        guard session.generation == generation, session.record.quarantineError == nil else { return }
         session.pieceWork.removeValue(forKey: index)
         if valid {
             session.record.verified[index] = true
@@ -286,6 +290,7 @@ extension TorrentEngine {
             }
         } else {
             await disconnect(id, key: key)
+            guard session.generation == generation, session.record.quarantineError == nil else { return }
             session.snapshot.error = "A corrupt piece was discarded and will be downloaded again"
         }
     }
@@ -299,7 +304,13 @@ extension TorrentEngine {
         try await budget.acquire(length)
         do {
             try await limiter.wait(bytes: length, upload: true)
-            let block = try await disk.read(offset: Int64(index) * Int64(session.record.metainfo.pieceLength) + Int64(begin), length: length)
+            let block: Data
+            do { block = try await disk.read(offset: Int64(index) * Int64(session.record.metainfo.pieceLength) + Int64(begin), length: length) }
+            catch {
+                if !(error is CancellationError) { await quarantine(id, error: error) }
+                throw error
+            }
+            guard session.record.quarantineError == nil, session.peers[key] != nil else { await budget.release(length); return }
             try await peer.connection.send(.piece(index: index, begin: begin, block: block))
             session.record.uploaded += Int64(length)
             runStatistics.current.uploadedBytes += Int64(length)
