@@ -83,6 +83,7 @@ open -n build/Build/Products/Debug/Torrenza.app --args \
 | Native file icons and torrent badges | `--ui-file-badges` |
 | Settings appearance | `--ui-appearance-check` |
 | Native multiselection | `--ui-multiselect-check` |
+| Column sorting within folders | `--ui-sort-check` |
 | qBittorrent import selection | `--ui-qb-import` |
 | Import without hashing | `--ui-qb-import --ui-qb-skip-verification` |
 

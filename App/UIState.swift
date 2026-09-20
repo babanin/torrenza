@@ -18,6 +18,7 @@ struct UIState: Codable, Equatable {
     var effectiveSelectedNodeIDs: [String] { selectedNodeIDs ?? selectedNodeID.map { [$0] } ?? [] }
     var columnOrder: [String] = []
     var columnWidths: [String: Double] = [:]
+    var sortOrder: TreeSortOrder?
     // Optional so existing profile state decodes without losing saved interface preferences.
     var appearance: AppAppearance?
     // Dialog starting locations only; choosing a folder still grants access through NSOpenPanel.

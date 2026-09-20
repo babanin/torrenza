@@ -24,6 +24,12 @@ import TorrentCore
 }
 
 public enum TreeFilter: String, CaseIterable, Sendable { case all = "All Transfers", active = "Active", downloading = "Downloading", completed = "Completed", paused = "Paused", attention = "Needs Attention" }
+public enum TreeSortColumn: String, Codable, Sendable { case name, size, progress, download, upload, uploaded, seeds, peers }
+public struct TreeSortOrder: Codable, Equatable, Sendable {
+    public var column: TreeSortColumn
+    public var ascending: Bool
+    public init(column: TreeSortColumn, ascending: Bool) { self.column = column; self.ascending = ascending }
+}
 public struct TreeMetrics: Equatable, Sendable {
     public var size: Int64 = 0
     public var verified: Int64 = 0
@@ -51,12 +57,21 @@ public struct TreeMetrics: Equatable, Sendable {
     private var fileOffsets: [String: [Int: Int]] = [:]
     private var lastSearch = ""
     private var lastFilter: TreeFilter = .all
+    private var sort: TreeSortOrder?
+    private struct Siblings {
+        let natural: [TorrentTreeNode]
+        var ordered: [TorrentTreeNode]
+    }
+    // Cache only requested levels: sorting never walks into a collapsed subtree.
+    private var siblingCache: [String: Siblings] = [:]
     private let startupVolumeName: String
     public init(startupVolumeName: String = "Startup Disk") { self.startupVolumeName = startupVolumeName }
 
-    /// Rate/progress updates retain node identity and do not rebuild the hierarchy.
-    @discardableResult public func update(_ snapshots: [TransferSnapshot], search: String = "", filter: TreeFilter = .all) -> Bool {
+    /// Rate/progress updates retain node identity. A changed visible ordering advances generation.
+    @discardableResult public func update(_ snapshots: [TransferSnapshot], search: String = "", filter: TreeFilter = .all, sort: TreeSortOrder? = nil) -> Bool {
         transfers = Dictionary(snapshots.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        let sortChanged = self.sort != sort
+        self.sort = sort
         let term = search.trimmingCharacters(in: .whitespacesAndNewlines)
         // Torrent IDs are info hashes: their file paths and layout are immutable.
         // Compare only transfer topology, never all file paths on each progress tick.
@@ -66,8 +81,22 @@ public struct TreeMetrics: Equatable, Sendable {
                       matchesFilter: Self.matches($0, filter: filter))
         }
         let changed = term != lastSearch || filter != lastFilter || nextStructure != structure
-        guard changed else { return false }
+        guard changed else {
+            // Name ordering cannot change without a topology or sort change.
+            guard sortChanged || (sort != nil && sort?.column != .name) else { return false }
+            var reordered = false
+            for (key, cached) in siblingCache {
+                let ordered = sorted(cached.natural)
+                if !zip(ordered, cached.ordered).allSatisfy({ $0 === $1 }) {
+                    reordered = true
+                    siblingCache[key] = Siblings(natural: cached.natural, ordered: ordered)
+                }
+            }
+            if reordered { generation += 1 }
+            return reordered
+        }
         structure = nextStructure; lastSearch = term; lastFilter = filter; generation += 1
+        siblingCache.removeAll(keepingCapacity: true)
         fileOffsets = Dictionary(uniqueKeysWithValues: snapshots.map { transfer in
             (transfer.id, Dictionary(transfer.files.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first }))
         })
@@ -88,6 +117,73 @@ public struct TreeMetrics: Equatable, Sendable {
             }, at: 0)
         }
         return true
+    }
+
+    /// Returns one ordered sibling group, preserving its parent and every node's identity.
+    public func children(of parent: TorrentTreeNode?) -> [TorrentTreeNode] {
+        let key = parent?.id ?? "tree-roots"
+        if let cached = siblingCache[key] { return cached.ordered }
+        let natural = parent?.children ?? roots
+        let ordered = sorted(natural)
+        siblingCache[key] = Siblings(natural: natural, ordered: ordered)
+        return ordered
+    }
+
+    private enum SortValue {
+        case integer(Int64), fraction(Double)
+        func compare(_ other: SortValue) -> ComparisonResult {
+            switch (self, other) {
+            case (.integer(let lhs), .integer(let rhs)):
+                return lhs == rhs ? .orderedSame : lhs < rhs ? .orderedAscending : .orderedDescending
+            case (.fraction(let lhs), .fraction(let rhs)):
+                return lhs == rhs ? .orderedSame : lhs < rhs ? .orderedAscending : .orderedDescending
+            default: return .orderedSame // Each column uses a single numeric representation.
+            }
+        }
+    }
+
+    private func sortValue(for node: TorrentTreeNode, column: TreeSortColumn) -> SortValue? {
+        switch column {
+        case .name: return nil
+        case .seeds, .peers:
+            guard case .torrent(let id) = node.kind, let transfer = transfers[id] else { return nil }
+            return .integer(Int64(column == .seeds ? transfer.swarm.connectedSeeds : transfer.swarm.connectedPeers))
+        case .size:
+            if case .file(let id, let index) = node.kind {
+                return file(transferID: id, index: index).map { .integer($0.file.length) }
+            }
+            return .integer(metrics(for: node).size)
+        case .progress:
+            if case .file(let id, let index) = node.kind, file(transferID: id, index: index)?.selected != true { return nil }
+            return .fraction(metrics(for: node).progress)
+        case .download: return .fraction(metrics(for: node).downloadRate)
+        case .upload: return .fraction(metrics(for: node).uploadRate)
+        case .uploaded: return .integer(metrics(for: node).uploadedBytes)
+        }
+    }
+
+    private func sorted(_ nodes: [TorrentTreeNode]) -> [TorrentTreeNode] {
+        guard let sort, nodes.count > 1 else { return nodes }
+        // Evaluate aggregates once per sibling, never repeatedly inside the comparator.
+        let values = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, sortValue(for: $0, column: sort.column)) })
+        return nodes.sorted { lhs, rhs in
+            if sort.column != .name {
+                let left = values[lhs.id] ?? nil, right = values[rhs.id] ?? nil
+                switch (left, right) {
+                case (.some(let left), .some(let right)):
+                    let comparison = left.compare(right)
+                    if comparison != .orderedSame { return comparison == (sort.ascending ? .orderedAscending : .orderedDescending) }
+                case (.some, .none): return true
+                case (.none, .some): return false
+                case (.none, .none): break
+                }
+            }
+            let nameOrder = lhs.name.localizedStandardCompare(rhs.name)
+            if nameOrder != .orderedSame {
+                return nameOrder == (sort.column == .name && !sort.ascending ? .orderedDescending : .orderedAscending)
+            }
+            return lhs.id < rhs.id
+        }
     }
 
     /// File indices can be sparse when padding entries are omitted from snapshots.

@@ -4,6 +4,8 @@ A native macOS torrent client written entirely in Swift. Requires macOS 26 or la
 
 Torrenza organizes downloads by volume and destination folder, then expands into each torrent's folders and files. The main window uses a native AppKit outline table inside a SwiftUI shell. Five filters live in the window toolbar, leaving the full window width and height for the tree. Only managed content is shown; browsing does not scan your drives.
 
+Click a column header to sort the items inside each folder; click again to reverse the order. Folders and torrents retain their hierarchy, and the sort choice is saved per profile. Progress sorts by completion percentage, while Seeds and Peers sort by connected counts. Selection and expanded folders remain stable as live statistics change the order.
+
 ## Build and run
 
 Prerequisites: Xcode 26.6 or a compatible newer Xcode, and [XcodeGen](https://github.com/yonaskolb/XcodeGen).

@@ -18,9 +18,12 @@ struct TorrentOutlineView: NSViewRepresentable {
         outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         for (id, title, width) in [("name", "Name", 320.0), ("size", "Size", 90.0), ("progress", "Progress / Status", 180.0), ("download", "Download", 95.0), ("upload", "Upload", 95.0), ("uploaded", "Uploaded", 110.0), ("seeds", "Seeds", 85.0), ("peers", "Peers", 85.0)] {
             let column = NSTableColumn(identifier: .init(id)); column.title = title; column.width = width; column.minWidth = id == "name" ? 180 : 65
+            column.sortDescriptorPrototype = NSSortDescriptor(key: id, ascending: id == "name")
             if id == "seeds" { column.headerToolTip = "Connected seeds / tracker-reported seeds. Estimates are not summed across trackers." }
             if id == "peers" { column.headerToolTip = "All connected peers, including seeds / tracker-reported total peers." }
             if id == "uploaded" { column.headerToolTip = "Total payload uploaded, including repeated uploads. * means since per-file tracking started; earlier uploads cannot be attributed to individual files." }
+            let sortHelp = id == "progress" ? "Sort by completion percentage within each folder." : ["seeds", "peers"].contains(id) ? "Sort by connected count within each folder." : "Click to sort within each folder; click again to reverse."
+            column.headerToolTip = [column.headerToolTip, sortHelp].compactMap { $0 }.joined(separator: " ")
             outline.addTableColumn(column)
         }
         outline.outlineTableColumn = outline.tableColumns.first
@@ -75,7 +78,13 @@ struct TorrentOutlineView: NSViewRepresentable {
                 }
                 restoring = false; generation = -1
             }
-            model.tree.update(model.transfers, search: model.search, filter: model.filter)
+            let descriptors = model.uiState.sortOrder.map { [NSSortDescriptor(key: $0.column.rawValue, ascending: $0.ascending)] } ?? []
+            if outline.sortDescriptors != descriptors {
+                restoring = true
+                outline.sortDescriptors = descriptors
+                restoring = false
+            }
+            model.tree.update(model.transfers, search: model.search, filter: model.filter, sort: model.uiState.sortOrder)
             if generation != model.tree.generation {
                 generation = model.tree.generation
                 filtering = !model.search.isEmpty || model.filter != .all
@@ -83,7 +92,7 @@ struct TorrentOutlineView: NSViewRepresentable {
                 outline.reloadData()
                 var restoredSelection: [TorrentTreeNode] = []
                 // Only descend into persisted expanded branches. Filter results reveal their location.
-                for node in model.tree.roots { restore(node, outline: outline, reveal: filtering, depth: 0) }
+                for node in model.tree.children(of: nil) { restore(node, outline: outline, reveal: filtering, depth: 0) }
                 var selectedRows = IndexSet()
                 for row in 0..<outline.numberOfRows {
                     if let node = outline.item(atRow: row) as? TorrentTreeNode, selectedNodeIDs.contains(node.id) {
@@ -116,14 +125,24 @@ struct TorrentOutlineView: NSViewRepresentable {
             switch node.kind { case .volume, .resolving: autoExpand = true; case .folder: autoExpand = node.fileIndices == nil; default: autoExpand = false }
             if node.expandable && (expanded.contains(node.id) || (reveal && autoExpand) || (!model.uiState.hasSavedExpansion && depth == 0)) {
                 outline.expandItem(node)
-                for child in node.children { restore(child, outline: outline, reveal: reveal, depth: depth + 1) }
+                for child in model.tree.children(of: node) { restore(child, outline: outline, reveal: reveal, depth: depth + 1) }
             }
         }
         func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
             guard belongsToActiveProfile else { return 0 }
-            return (item as? TorrentTreeNode)?.children.count ?? model.tree.roots.count
+            return model.tree.children(of: item as? TorrentTreeNode).count
         }
-        func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any { (item as? TorrentTreeNode)?.children[index] ?? model.tree.roots[index] }
+        func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any { model.tree.children(of: item as? TorrentTreeNode)[index] }
+        func outlineView(_ outlineView: NSOutlineView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
+            guard canInteract, loadedState, !restoring else { return }
+            let order = outlineView.sortDescriptors.first.flatMap { descriptor -> TreeSortOrder? in
+                guard let key = descriptor.key, let column = TreeSortColumn(rawValue: key) else { return nil }
+                return TreeSortOrder(column: column, ascending: descriptor.ascending)
+            }
+            guard order != model.uiState.sortOrder else { return }
+            model.uiState.sortOrder = order
+            refresh(model: model)
+        }
         func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { belongsToActiveProfile && ((item as? TorrentTreeNode)?.expandable ?? false) }
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
             guard belongsToActiveProfile, let node = item as? TorrentTreeNode, let column = tableColumn else { return nil }
