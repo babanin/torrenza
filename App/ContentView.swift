@@ -272,8 +272,12 @@ struct TransferInspector: View {
                             VStack(alignment: .leading) {
                                 Text(file.file.path.joined(separator: "/")).lineLimit(2).truncationMode(.middle)
                                 Text("\(byteString(file.verifiedBytes)) of \(byteString(file.file.length))").font(.caption).foregroundStyle(.secondary)
+                                Text("Uploaded: \(byteString(file.uploadedBytes))\(transfer.fileUploadHistoryComplete ? "" : " since tracking started")").font(.caption).foregroundStyle(.secondary)
                             }
                         }
+                    }
+                    if !transfer.fileUploadHistoryComplete {
+                        Text("Earlier uploads are included in the torrent total, but their per-file breakdown is unavailable.").font(.caption).foregroundStyle(.secondary)
                     }
                 } else if tab == "Trackers" {
                     List(transfer.trackers, id: \.self) { tracker in Text(tracker).textSelection(.enabled).font(.caption).lineLimit(3) }

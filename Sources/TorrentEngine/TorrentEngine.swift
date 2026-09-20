@@ -61,19 +61,48 @@ final class EngineSession {
     var previousDownloaded: Int64 = 0
     var previousUploaded: Int64 = 0
     var lastRate = Date()
+    private let fileSnapshotIndices: [Int: Int]
     private lazy var volume = VolumeCapabilities.inspect(destination: record.destination)
     var volumeKey: String { volume.identity }
     var automaticHDD: Bool { volume.isSolidState != true }
     init(record: EngineRecord) {
+        var record = record
+        record.initializeFileUploadHistory()
         self.record = record
+        fileSnapshotIndices = Dictionary(uniqueKeysWithValues: record.metainfo.files.filter { !$0.isPadding }.enumerated().map { ($0.element.index, $0.offset) })
         wanted = Self.wantedPieces(record)
-        snapshot = TransferSnapshot(id: record.metainfo.id, name: record.metainfo.name, destination: record.destination, isMultiFile: record.metainfo.isMultiFile, state: record.wantedRunning ? .queued : .paused, files: record.metainfo.files.filter { !$0.isPadding }.map { FileSnapshot(file: $0, selected: record.selectedFiles.contains($0.index)) }, selectedBytes: record.metainfo.files.filter { record.selectedFiles.contains($0.index) }.reduce(0) { $0 + $1.length }, downloadedBytes: record.downloaded, uploadedBytes: record.uploaded, seedRatio: record.seedRatio, trackers: record.metainfo.trackerTiers.flatMap { $0 }.map(\.absoluteString))
+        snapshot = TransferSnapshot(id: record.metainfo.id, name: record.metainfo.name, destination: record.destination, isMultiFile: record.metainfo.isMultiFile, state: record.wantedRunning ? .queued : .paused, files: record.metainfo.files.filter { !$0.isPadding }.map { FileSnapshot(file: $0, selected: record.selectedFiles.contains($0.index), uploadedBytes: record.fileUploadedBytes?[$0.index] ?? 0) }, fileUploadHistoryComplete: record.fileUploadHistoryComplete ?? false, selectedBytes: record.metainfo.files.filter { record.selectedFiles.contains($0.index) }.reduce(0) { $0 + $1.length }, downloadedBytes: record.downloaded, uploadedBytes: record.uploaded, seedRatio: record.seedRatio, trackers: record.metainfo.trackerTiers.flatMap { $0 }.map(\.absoluteString))
         if let error = record.quarantineError {
             snapshot.state = .failed
             snapshot.error = error
         }
         previousDownloaded = record.downloaded; previousUploaded = record.uploaded
     }
+    /// Account payload only after the transport accepts the complete piece message.
+    func recordUploadedBlock(offset: Int64, length: Int) {
+        record.uploaded += Int64(length)
+        snapshot.uploadedBytes = record.uploaded
+        let end = offset + Int64(length)
+        let files = record.metainfo.files
+        var low = 0, high = files.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if files[middle].offset + files[middle].length <= offset { low = middle + 1 }
+            else { high = middle }
+        }
+        while low < files.count, files[low].offset < end {
+            let file = files[low]
+            let count = min(end, file.offset + file.length) - max(offset, file.offset)
+            if !file.isPadding, count > 0 {
+                record.fileUploadedBytes![file.index, default: 0] += count
+                if let position = fileSnapshotIndices[file.index] {
+                    snapshot.files[position].uploadedBytes = record.fileUploadedBytes![file.index]!
+                }
+            }
+            low += 1
+        }
+    }
+
     static func wantedPieces(_ record: EngineRecord) -> PieceBitset {
         var result = PieceBitset(count: record.metainfo.pieceHashes.count)
         for file in record.metainfo.files where record.selectedFiles.contains(file.index) && file.length > 0 {
@@ -380,7 +409,7 @@ public actor TorrentEngine {
                 guard identities.insert(record.metainfo.id).inserted,
                       record.verified.count == record.metainfo.pieceHashes.count,
                       !record.selectedFiles.isEmpty, record.selectedFiles.isSubset(of: validFiles),
-                      record.downloaded >= 0, record.uploaded >= 0,
+                      record.downloaded >= 0, record.uploaded >= 0, record.hasValidFileUploadHistory,
                       record.seedRatio == nil || (record.seedRatio!.isFinite && record.seedRatio! >= 0) else {
                     throw TorrentError.storage("Saved transfer state is invalid")
                 }

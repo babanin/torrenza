@@ -35,6 +35,30 @@ import TorrentCore
         let contentFolder = root.children[0].children[0].children[0].children[0]
         #expect(model.metrics(for: contentFolder).verified == 90)
     }
+    @Test func uploadedTotalsPreserveHistoryAndSkippedFiles() {
+        let model = TorrentTreeModel()
+        var transfer = torrent()
+        transfer.uploadedBytes = 900
+        transfer.fileUploadHistoryComplete = false
+        transfer.files[0].uploadedBytes = 120
+        transfer.files[1].uploadedBytes = 30
+        model.update([transfer])
+        let root = model.roots[0]
+        let torrentNode = root.children[0].children[0].children[0]
+        let folder = torrentNode.children[0]
+        let skippedFile = torrentNode.children[1]
+        #expect(model.metrics(for: root).uploadedBytes == 900)
+        #expect(model.metrics(for: torrentNode).uploadHistoryComplete)
+        #expect(model.metrics(for: folder).uploadedBytes == 120)
+        #expect(!model.metrics(for: folder).uploadHistoryComplete)
+        #expect(model.metrics(for: skippedFile).uploadedBytes == 30)
+        #expect(model.metrics(for: skippedFile).size == 0)
+        transfer.files[0].uploadedBytes = 180
+        transfer.uploadedBytes = 960
+        #expect(!model.update([transfer]))
+        #expect(model.metrics(for: folder).uploadedBytes == 180)
+        #expect(model.metrics(for: root).uploadedBytes == 960)
+    }
     @Test func singleFileHasNoWrapper() {
         let model = TorrentTreeModel()
         model.update([TransferSnapshot(id: "one", name: "single.iso", destination: URL(fileURLWithPath: "/Volumes/External"), files: [.init(file: .init(index: 0, path: ["single.iso"], length: 42, offset: 0), selected: true)], selectedBytes: 42)])

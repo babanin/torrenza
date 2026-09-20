@@ -1,10 +1,34 @@
 import XCTest
 import Foundation
+import Network
 import TorrentCore
 import TorrentWire
 @testable import TorrentEngine
 
 extension EngineTests {
+    func testFailedPeerSendDoesNotCountUploadedFileBytes() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let payload = Data(repeating: 42, count: 32_768)
+        let meta = fixture(payload)
+        try payload.write(to: root.appendingPathComponent(meta.name))
+        let engine = TorrentEngine(stateDirectory: root.appendingPathComponent("state"))
+        do {
+            _ = try await engine.add(metainfo: meta, destination: root, selectedFiles: [0], seedRatio: nil, allowExisting: true, startPaused: true)
+            do {
+                try await engine.exerciseFailedPeerUpload(meta.id)
+                XCTFail("Sending to a closed peer must fail")
+            } catch { }
+            let snapshot = await engine.currentSnapshots().first
+            XCTAssertEqual(snapshot?.uploadedBytes, 0)
+            XCTAssertEqual(snapshot?.files.first?.uploadedBytes, 0)
+            XCTAssertNil(snapshot?.error)
+            let statistics = await engine.statistics()
+            XCTAssertEqual(statistics.current.uploadedBytes, 0)
+            await engine.shutdown()
+        } catch { await engine.shutdown(); throw error }
+    }
+
     func testUploadShortReadQuarantinesOnlyAffectedTorrentAndPersistsError() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -29,6 +53,8 @@ extension EngineTests {
         XCTAssertEqual(failed.state, .failed)
         XCTAssertTrue(failed.error?.contains("truncated") == true)
         XCTAssertEqual(failed.swarm.connectedPeers, 0)
+        XCTAssertEqual(failed.uploadedBytes, 0)
+        XCTAssertEqual(failed.files.first?.uploadedBytes, 0)
         XCTAssertEqual(snapshots.first { $0.id == other.id }?.state, .paused)
         await engine.volumesChanged()
         await engine.tick()
@@ -69,6 +95,21 @@ extension EngineTests {
 }
 
 private extension TorrentEngine {
+    func exerciseFailedPeerUpload(_ id: String) async throws {
+        guard let session = sessions[id] else { throw TorrentError.storage("Missing test session") }
+        let endpoint = PeerEndpoint(host: "127.0.0.1", port: 1)
+        let transport = NWConnection(host: "127.0.0.1", port: 1, using: .tcp)
+        transport.start(queue: .global())
+        let connection = PeerConnection(connection: transport)
+        await connection.close()
+        let key = UUID()
+        var peer = ActivePeer(connection: connection, endpoint: endpoint, availability: PieceBitset(count: session.wanted.count))
+        peer.interested = true
+        session.peers[key] = peer
+        defer { session.peers.removeValue(forKey: key) }
+        try await upload(id, key: key, index: 0, begin: 0, length: 16_384)
+    }
+
     func exerciseQuarantineUpload(_ id: String) async throws {
         guard let session = sessions[id] else { throw TorrentError.storage("Missing test session") }
         let endpoint = PeerEndpoint(host: "127.0.0.1", port: 1)

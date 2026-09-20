@@ -29,6 +29,8 @@ public struct TreeMetrics: Equatable, Sendable {
     public var verified: Int64 = 0
     public var downloadRate: Double = 0
     public var uploadRate: Double = 0
+    public var uploadedBytes: Int64 = 0
+    public var uploadHistoryComplete: Bool = true
     public var progress: Double { size > 0 ? min(1, Double(verified) / Double(size)) : 0 }
     public init() {}
 }
@@ -100,13 +102,16 @@ public struct TreeMetrics: Equatable, Sendable {
         for id in node.transferIDs {
             guard let transfer = transfers[id] else { continue }
             if let indices = node.fileIndices {
+                result.uploadHistoryComplete = result.uploadHistoryComplete && transfer.fileUploadHistoryComplete
                 for index in indices {
-                    guard let file = file(transferID: id, index: index), file.selected else { continue }
-                    result.size += file.file.length; result.verified += file.verifiedBytes
+                    guard let file = file(transferID: id, index: index) else { continue }
+                    result.uploadedBytes += file.uploadedBytes
+                    if file.selected { result.size += file.file.length; result.verified += file.verifiedBytes }
                 }
             } else {
                 result.size += transfer.selectedBytes; result.verified += transfer.completedBytes
                 result.downloadRate += transfer.downloadRate; result.uploadRate += transfer.uploadRate
+                result.uploadedBytes += transfer.uploadedBytes
             }
         }
         return result

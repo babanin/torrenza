@@ -130,8 +130,9 @@ public struct FileSnapshot: Sendable, Equatable, Identifiable {
     public let file: TorrentFile
     public var selected: Bool
     public var verifiedBytes: Int64
+    public var uploadedBytes: Int64
     public var id: Int { file.index }
-    public init(file: TorrentFile, selected: Bool, verifiedBytes: Int64 = 0) { self.file = file; self.selected = selected; self.verifiedBytes = verifiedBytes }
+    public init(file: TorrentFile, selected: Bool, verifiedBytes: Int64 = 0, uploadedBytes: Int64 = 0) { self.file = file; self.selected = selected; self.verifiedBytes = verifiedBytes; self.uploadedBytes = uploadedBytes }
 }
 public struct TransferSnapshot: Sendable, Identifiable, Equatable {
     public let id: String
@@ -140,6 +141,8 @@ public struct TransferSnapshot: Sendable, Identifiable, Equatable {
     public var isMultiFile: Bool
     public var state: TransferState
     public var files: [FileSnapshot]
+    /// False when aggregate uploads include history that cannot be attributed to individual files.
+    public var fileUploadHistoryComplete: Bool
     public var completedBytes: Int64
     public var selectedBytes: Int64
     public var downloadedBytes: Int64
@@ -151,8 +154,8 @@ public struct TransferSnapshot: Sendable, Identifiable, Equatable {
     public var error: String?
     public var trackers: [String]
     public var progress: Double { selectedBytes > 0 ? min(1, Double(completedBytes) / Double(selectedBytes)) : 0 }
-    public init(id: String, name: String, destination: URL? = nil, isMultiFile: Bool = false, state: TransferState = .queued, files: [FileSnapshot] = [], completedBytes: Int64 = 0, selectedBytes: Int64 = 0, downloadedBytes: Int64 = 0, uploadedBytes: Int64 = 0, downloadRate: Double = 0, uploadRate: Double = 0, seedRatio: Double? = 1, swarm: SwarmCounts = .init(), error: String? = nil, trackers: [String] = []) {
-        self.id = id; self.name = name; self.destination = destination; self.isMultiFile = isMultiFile; self.state = state; self.files = files; self.completedBytes = completedBytes; self.selectedBytes = selectedBytes; self.downloadedBytes = downloadedBytes; self.uploadedBytes = uploadedBytes; self.downloadRate = downloadRate; self.uploadRate = uploadRate; self.seedRatio = seedRatio; self.swarm = swarm; self.error = error; self.trackers = trackers
+    public init(id: String, name: String, destination: URL? = nil, isMultiFile: Bool = false, state: TransferState = .queued, files: [FileSnapshot] = [], fileUploadHistoryComplete: Bool = true, completedBytes: Int64 = 0, selectedBytes: Int64 = 0, downloadedBytes: Int64 = 0, uploadedBytes: Int64 = 0, downloadRate: Double = 0, uploadRate: Double = 0, seedRatio: Double? = 1, swarm: SwarmCounts = .init(), error: String? = nil, trackers: [String] = []) {
+        self.id = id; self.name = name; self.destination = destination; self.isMultiFile = isMultiFile; self.state = state; self.files = files; self.fileUploadHistoryComplete = fileUploadHistoryComplete; self.completedBytes = completedBytes; self.selectedBytes = selectedBytes; self.downloadedBytes = downloadedBytes; self.uploadedBytes = uploadedBytes; self.downloadRate = downloadRate; self.uploadRate = uploadRate; self.seedRatio = seedRatio; self.swarm = swarm; self.error = error; self.trackers = trackers
     }
 }
 

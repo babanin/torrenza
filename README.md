@@ -76,6 +76,8 @@ The system SQLite library runs on a dedicated utility queue. Related changes com
 
 Each profile activation has a persistent session record with start/end times and downloaded/uploaded payload-byte totals. Lifetime counters are per profile and survive torrent removal. Accepted retransmissions and corrupt requested blocks count as transferred bytes; protocol overhead and unsolicited payloads do not. Session/lifetime totals appear in the footer and Settings. Checkpoints run during active work and on pause, profile switch, or quit; an abrupt termination may lose counters since the last checkpoint (normally at most 30 seconds), and the previous session is marked interrupted next launch.
 
+The tree’s **Uploaded** column and inspector’s **Files** tab show uploaded payload totals for each file, saved in the same database. Blocks spanning multiple files are split by byte range; repeated uploads count again, and padding is excluded from file totals. For existing or imported multi-file torrents, an asterisk marks totals measured since per-file tracking started: earlier uploads remain in the torrent total, but their file breakdown is unavailable. Historical totals can be attributed to a single file when the torrent contains no other files or padding.
+
 A target profile is validated before the current one is stopped. An unreadable profile remains on disk, and other profiles remain accessible. Profile switching is unavailable while an import, file picker, or transfer edit is in progress.
 
 Legacy JSON state and app-owned preferences migrate only after successful database writes. Downloaded payload files and selective-download boundary sidecars remain in their destination folders; they are not library metadata.

@@ -168,6 +168,9 @@ extension TorrentEngine {
 
     func refreshProgress(_ session: EngineSession) async {
         session.snapshot.files = TorrentDisk.fileSnapshots(metainfo: session.record.metainfo, selectedFiles: session.record.selectedFiles, verified: session.record.verified)
+        for index in session.snapshot.files.indices {
+            session.snapshot.files[index].uploadedBytes = session.record.fileUploadedBytes?[session.snapshot.files[index].id] ?? 0
+        }
         session.snapshot.selectedBytes = session.snapshot.files.filter(\.selected).reduce(0) { $0 + $1.file.length }
         session.snapshot.completedBytes = session.snapshot.files.filter(\.selected).reduce(0) { $0 + $1.verifiedBytes }
     }

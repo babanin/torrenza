@@ -55,6 +55,8 @@ final class EngineTests: XCTestCase, @unchecked Sendable {
             XCTAssertEqual(try Data(contentsOf: target.appendingPathComponent(meta.name)), payload)
             let seedSnapshots = await seed.currentSnapshots()
             XCTAssertGreaterThan(seedSnapshots.first?.uploadedBytes ?? 0, 0)
+            XCTAssertEqual(seedSnapshots.first?.files.first?.uploadedBytes, seedSnapshots.first?.uploadedBytes)
+            XCTAssertEqual(seedSnapshots.first?.fileUploadHistoryComplete, true)
             try await client.remove(meta.id)
             let afterRemoval = await client.statistics()
             XCTAssertEqual(afterRemoval.lifetimeDownloadedBytes, Int64(payload.count))

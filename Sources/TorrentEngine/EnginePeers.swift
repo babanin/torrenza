@@ -312,7 +312,7 @@ extension TorrentEngine {
             }
             guard session.record.quarantineError == nil, session.peers[key] != nil else { await budget.release(length); return }
             try await peer.connection.send(.piece(index: index, begin: begin, block: block))
-            session.record.uploaded += Int64(length)
+            session.recordUploadedBlock(offset: Int64(index) * Int64(session.record.metainfo.pieceLength) + Int64(begin), length: length)
             runStatistics.current.uploadedBytes += Int64(length)
             runStatistics.lifetimeUploadedBytes += Int64(length)
             session.snapshot.uploadedBytes = session.record.uploaded

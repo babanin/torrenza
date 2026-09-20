@@ -25,10 +25,10 @@ import TorrentStorage
         var swarm = SwarmCounts()
         swarm.connectedSeeds = 3; swarm.connectedPeers = 11; swarm.reportedSeeds = 120; swarm.reportedPeers = 160
         swarm.reportedAt = .now; swarm.tracker = "https://tracker.example.test/announce"
-        let files = [FileSnapshot(file: TorrentFile(index: 0, path: ["A", "Documents", "Guide.pdf"], length: 4_000_000, offset: 0), selected: true, verifiedBytes: 2_000_000), FileSnapshot(file: TorrentFile(index: 1, path: ["A", "Archive.zip"], length: 46_000_000, offset: 4_000_000), selected: true, verifiedBytes: 19_000_000)]
+        let files = [FileSnapshot(file: TorrentFile(index: 0, path: ["A", "Documents", "Guide.pdf"], length: 4_000_000, offset: 0), selected: true, verifiedBytes: 2_000_000, uploadedBytes: 120_000), FileSnapshot(file: TorrentFile(index: 1, path: ["A", "Archive.zip"], length: 46_000_000, offset: 4_000_000), selected: true, verifiedBytes: 19_000_000, uploadedBytes: 80_000)]
         transfers = [
-            TransferSnapshot(id: "ui-a", name: "A", destination: URL(fileURLWithPath: "/Volumes/Storage/torrents/other"), isMultiFile: true, state: .downloading, files: files, completedBytes: 21_000_000, selectedBytes: 50_000_000, downloadedBytes: 21_000_000, uploadedBytes: 2_000_000, downloadRate: 4_200_000, uploadRate: 128_000, swarm: swarm, trackers: ["https://tracker.example.test/announce"]),
-            TransferSnapshot(id: "ui-b", name: "B", destination: URL(fileURLWithPath: "/Volumes/Storage/torrents/video"), isMultiFile: true, state: .seeding, files: [.init(file: .init(index: 0, path: ["B", "Movie.mp4"], length: 1_200_000_000, offset: 0), selected: true, verifiedBytes: 1_200_000_000)], completedBytes: 1_200_000_000, selectedBytes: 1_200_000_000, downloadedBytes: 1_200_000_000, uploadedBytes: 720_000_000, uploadRate: 2_100_000, swarm: swarm),
+            TransferSnapshot(id: "ui-a", name: "A", destination: URL(fileURLWithPath: "/Volumes/Storage/torrents/other"), isMultiFile: true, state: .downloading, files: files, fileUploadHistoryComplete: false, completedBytes: 21_000_000, selectedBytes: 50_000_000, downloadedBytes: 21_000_000, uploadedBytes: 2_000_000, downloadRate: 4_200_000, uploadRate: 128_000, swarm: swarm, trackers: ["https://tracker.example.test/announce"]),
+            TransferSnapshot(id: "ui-b", name: "B", destination: URL(fileURLWithPath: "/Volumes/Storage/torrents/video"), isMultiFile: true, state: .seeding, files: [.init(file: .init(index: 0, path: ["B", "Movie.mp4"], length: 1_200_000_000, offset: 0), selected: true, verifiedBytes: 1_200_000_000, uploadedBytes: 720_000_000)], completedBytes: 1_200_000_000, selectedBytes: 1_200_000_000, downloadedBytes: 1_200_000_000, uploadedBytes: 720_000_000, uploadRate: 2_100_000, swarm: swarm),
             TransferSnapshot(id: "ui-offline", name: "Linux.iso", destination: URL(fileURLWithPath: "/Volumes/Backup"), state: .unavailable, selectedBytes: 4_000_000_000, error: "Connect Backup to resume this download.")
         ]
         if fileBadges {
@@ -129,6 +129,18 @@ import TorrentStorage
             }
             inspectControls(captureView)
             if let outline = findOutline(view), let header = outline.headerView { geometry.append("Table header frame: \(header.convert(header.bounds, to: captureView))") }
+            var uploadChecksPassed = true
+            if !fileBadges, !qbImport, !multiselect, let outline = findOutline(view),
+               let column = outline.tableColumns.first(where: { $0.identifier.rawValue == "uploaded" }) {
+                for (name, expected, partial) in [("Guide.pdf", Int64(120_000), true), ("Movie.mp4", Int64(720_000_000), false)] {
+                    let node = (0..<outline.numberOfRows).compactMap { outline.item(atRow: $0) as? TorrentTreeNode }.first { $0.name == name }
+                    let cell = node.flatMap { outline.delegate?.outlineView?(outline, viewFor: column, item: $0) as? NSTableCellView }
+                    let passed = cell?.textField?.stringValue == byteString(expected) + (partial ? "*" : "")
+                        && (!partial || cell?.toolTip?.contains("since per-file tracking started") == true)
+                    geometry.append("\(passed ? "PASS" : "FAIL"): Per-file uploaded total and history label for \(name)")
+                    uploadChecksPassed = uploadChecksPassed && passed
+                }
+            }
             var searchChecksPassed = true
             if arguments.contains("--ui-search-check") {
                 @MainActor func check(_ condition: Bool, _ message: String) {
@@ -166,7 +178,7 @@ import TorrentStorage
             try? geometry.joined(separator: "\n").write(to: directory.appendingPathComponent(basename + ".txt"), atomically: true, encoding: .utf8)
             let importSheetVisible = !qbImport || window.attachedSheet != nil
             if qbImport { print("\(importSheetVisible ? "PASS" : "FAIL"): qBittorrent import sheet is visible") }
-            captured = searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed
+            captured = searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed && uploadChecksPassed
             print("UI snapshot: \(output.path)")
         }
     }

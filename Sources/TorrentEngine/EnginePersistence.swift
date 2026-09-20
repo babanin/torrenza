@@ -14,9 +14,38 @@ struct EngineRecord: Codable, Sendable {
     var seedRatio: Double?
     var downloaded: Int64
     var uploaded: Int64
+    var fileUploadedBytes: [Int: Int64]? = nil
+    var fileUploadHistoryComplete: Bool? = nil
     var wantedRunning: Bool
     var quarantineError: String? = nil
     var verified: PieceBitset
+}
+
+extension EngineRecord {
+    mutating func initializeFileUploadHistory() {
+        guard fileUploadedBytes == nil else { return }
+        fileUploadedBytes = [:]
+        fileUploadHistoryComplete = uploaded == 0
+        // Only an unpadded single-file torrent has an unambiguous historical split.
+        if metainfo.files.count == 1, let file = metainfo.files.first, !file.isPadding {
+            fileUploadedBytes = [file.index: uploaded]
+            fileUploadHistoryComplete = true
+        }
+    }
+
+    var hasValidFileUploadHistory: Bool {
+        guard let counters = fileUploadedBytes else { return fileUploadHistoryComplete == nil }
+        guard fileUploadHistoryComplete != nil else { return false }
+        let validFiles = Set(metainfo.files.filter { !$0.isPadding }.map(\.index))
+        var total: Int64 = 0
+        for (index, count) in counters {
+            guard validFiles.contains(index), count >= 0 else { return false }
+            let result = total.addingReportingOverflow(count)
+            guard !result.overflow else { return false }
+            total = result.partialValue
+        }
+        return total <= uploaded
+    }
 }
 
 struct EngineArchive: Codable, Sendable {
@@ -47,16 +76,20 @@ private struct MutableTransferRecord: Codable, Sendable {
     var seedRatio: Double?
     var downloaded: Int64
     var uploaded: Int64
+    var fileUploadedBytes: [Int: Int64]? = nil
+    var fileUploadHistoryComplete: Bool? = nil
     var wantedRunning: Bool
     var quarantineError: String? = nil
     var verified: PieceBitset
     init(_ record: EngineRecord) {
         destination = record.destination; bookmark = record.bookmark; volumeUUID = record.volumeUUID
         diskSignatures = nil; ownedSignatures = nil; selectedFiles = record.selectedFiles; seedRatio = record.seedRatio
-        downloaded = record.downloaded; uploaded = record.uploaded; wantedRunning = record.wantedRunning; quarantineError = record.quarantineError; verified = record.verified
+        downloaded = record.downloaded; uploaded = record.uploaded
+        fileUploadedBytes = record.fileUploadedBytes; fileUploadHistoryComplete = record.fileUploadHistoryComplete
+        wantedRunning = record.wantedRunning; quarantineError = record.quarantineError; verified = record.verified
     }
     func record(metainfo: TorrentMetainfo) -> EngineRecord {
-        EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, volumeUUID: volumeUUID, diskSignatures: diskSignatures, ownedSignatures: ownedSignatures, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloaded, uploaded: uploaded, wantedRunning: wantedRunning, quarantineError: quarantineError, verified: verified)
+        EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, volumeUUID: volumeUUID, diskSignatures: diskSignatures, ownedSignatures: ownedSignatures, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloaded, uploaded: uploaded, fileUploadedBytes: fileUploadedBytes, fileUploadHistoryComplete: fileUploadHistoryComplete, wantedRunning: wantedRunning, quarantineError: quarantineError, verified: verified)
     }
 }
 

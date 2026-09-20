@@ -16,10 +16,11 @@ struct TorrentOutlineView: NSViewRepresentable {
         outline.style = .inset; outline.rowSizeStyle = .medium; outline.usesAlternatingRowBackgroundColors = true
         outline.allowsMultipleSelection = true; outline.autosaveTableColumns = false
         outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
-        for (id, title, width) in [("name", "Name", 320.0), ("size", "Size", 90.0), ("progress", "Progress / Status", 180.0), ("download", "Download", 95.0), ("upload", "Upload", 95.0), ("seeds", "Seeds", 85.0), ("peers", "Peers", 85.0)] {
+        for (id, title, width) in [("name", "Name", 320.0), ("size", "Size", 90.0), ("progress", "Progress / Status", 180.0), ("download", "Download", 95.0), ("upload", "Upload", 95.0), ("uploaded", "Uploaded", 110.0), ("seeds", "Seeds", 85.0), ("peers", "Peers", 85.0)] {
             let column = NSTableColumn(identifier: .init(id)); column.title = title; column.width = width; column.minWidth = id == "name" ? 180 : 65
             if id == "seeds" { column.headerToolTip = "Connected seeds / tracker-reported seeds. Estimates are not summed across trackers." }
             if id == "peers" { column.headerToolTip = "All connected peers, including seeds / tracker-reported total peers." }
+            if id == "uploaded" { column.headerToolTip = "Total payload uploaded, including repeated uploads. * means since per-file tracking started; earlier uploads cannot be attributed to individual files." }
             outline.addTableColumn(column)
         }
         outline.outlineTableColumn = outline.tableColumns.first
@@ -162,6 +163,11 @@ struct TorrentOutlineView: NSViewRepresentable {
                 else { value = "\(Int(metrics.progress * 100))%" }
             case "download": value = rateString(metrics.downloadRate)
             case "upload": value = rateString(metrics.uploadRate)
+            case "uploaded":
+                value = byteString(metrics.uploadedBytes) + (metrics.uploadHistoryComplete ? "" : "*")
+                tooltip = metrics.uploadHistoryComplete
+                    ? "Total payload uploaded, including repeated uploads. Protocol overhead is excluded."
+                    : "Uploaded since per-file tracking started. Earlier uploads are included in the torrent total but cannot be attributed to individual files."
             case "seeds", "peers":
                 if let torrent {
                     let seeds = cellID.rawValue == "seeds", swarm = torrent.swarm
