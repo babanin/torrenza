@@ -84,6 +84,7 @@ open -n build/Build/Products/Debug/Torrenza.app --args \
 | Settings appearance | `--ui-appearance-check` |
 | Native multiselection | `--ui-multiselect-check` |
 | Column sorting within folders | `--ui-sort-check` |
+| Add Torrent resizing and empty file selection | `--ui-add-torrent` |
 | qBittorrent import selection | `--ui-qb-import` |
 | Import without hashing | `--ui-qb-import --ui-qb-skip-verification` |
 

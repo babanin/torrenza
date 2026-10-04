@@ -14,6 +14,7 @@ import TorrentStorage
         let longProfile = arguments.contains("--ui-long-profile")
         let fileBadges = arguments.contains("--ui-file-badges")
         let qbImport = arguments.contains("--ui-qb-import")
+        let addTorrent = arguments.contains("--ui-add-torrent")
         let multiselect = arguments.contains("--ui-multiselect-check")
         let sortCheck = arguments.contains("--ui-sort-check")
         let fixtureName = longProfile ? String(repeating: "Research ", count: 9).prefix(80).description : "Research"
@@ -91,8 +92,10 @@ import TorrentStorage
                 }
             }
             let importChecksPassed = !qbImport || installDebugQBittorrentImport()
+            if addTorrent { installDebugAddTorrent() }
             try? await Task.sleep(for: .milliseconds(600))
-            let contentToCapture = qbImport ? (window.attachedSheet?.contentView ?? view) : view
+            let addTorrentResult = addTorrent ? await checkDebugAddTorrent(window: window) : (passed: true, lines: [String]())
+            let contentToCapture = qbImport || addTorrent ? (window.attachedSheet?.contentView ?? view) : view
             let captureView = contentToCapture.superview ?? contentToCapture
             captureView.layoutSubtreeIfNeeded(); captureView.displayIfNeeded()
             guard let bitmap = captureView.bitmapImageRepForCachingDisplay(in: captureView.bounds) else { return }
@@ -100,12 +103,13 @@ import TorrentStorage
             guard let png = bitmap.representation(using: .png, properties: [:]) else { return }
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-UI", isDirectory: true)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let basename = "ui-smoke-\(dark ? "dark" : "light")\(narrow ? "-narrow" : wide ? "-wide" : "")\(longProfile ? "-long-profile" : "")\(fileBadges ? "-file-badges" : "")\(qbImport ? "-qb-import" : "")\(arguments.contains("--ui-qb-skip-verification") ? "-unchecked" : "")\(multiselect ? "-multiselect" : "")\(sortCheck ? "-sort" : "")"
+            let basename = "ui-smoke-\(dark ? "dark" : "light")\(narrow ? "-narrow" : wide ? "-wide" : "")\(longProfile ? "-long-profile" : "")\(fileBadges ? "-file-badges" : "")\(qbImport ? "-qb-import" : "")\(addTorrent ? "-add-torrent" : "")\(arguments.contains("--ui-qb-skip-verification") ? "-unchecked" : "")\(multiselect ? "-multiselect" : "")\(sortCheck ? "-sort" : "")"
             let output = directory.appendingPathComponent(basename + ".png")
             try? png.write(to: output, options: .atomic)
             var geometry = ["Window content size: \(view.bounds.size)", "Profile name: \(fixtureName)", "Toolbar item count: \(window.toolbar?.items.count ?? 0)"]
             geometry.append(contentsOf: multiselectResult.lines)
             geometry.append(contentsOf: sortResult.lines)
+            geometry.append(contentsOf: addTorrentResult.lines)
             @MainActor func describe(_ node: NSView) -> String {
                 "frame: \(node.convert(node.bounds, to: captureView)), hidden: \(node.isHiddenOrHasHiddenAncestor), visible rect: \(node.visibleRect)"
             }
@@ -188,9 +192,77 @@ import TorrentStorage
             try? geometry.joined(separator: "\n").write(to: directory.appendingPathComponent(basename + ".txt"), atomically: true, encoding: .utf8)
             let importSheetVisible = !qbImport || window.attachedSheet != nil
             if qbImport { print("\(importSheetVisible ? "PASS" : "FAIL"): qBittorrent import sheet is visible") }
-            captured = searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed && sortResult.passed && uploadChecksPassed
+            captured = searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed && sortResult.passed && uploadChecksPassed && addTorrentResult.passed
             print("UI snapshot: \(output.path)")
         }
+    }
+
+    private func installDebugAddTorrent() {
+        let files: [TorrentFile] = (0..<12).map { index in
+            TorrentFile(index: index, path: ["Open Video Collection", "Season 02", "Open.Video.Collection.S02E\(String(format: "%02d", index + 1)).1080p.WEB-DL.Long.Descriptive.Filename.mkv"], length: 4_194_304, offset: Int64(index) * 4_194_304)
+        }
+        let metainfo = TorrentMetainfo(infoHash: Data(repeating: 7, count: 20), rawInfo: Data(), name: "Open Video Collection (Season 2) WEB-DL 1080p", pieceLength: 4_194_304, pieceHashes: files.map { _ in Data(repeating: 7, count: 20) }, files: files, trackerTiers: [], isPrivate: true, isMultiFile: true)
+        let draft = ImportDraft(metainfo: metainfo, ratio: 1)
+        draft.destination = FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-UI/Downloads", isDirectory: true)
+        pendingImport = draft
+    }
+
+    private func checkDebugAddTorrent(window: NSWindow) async -> (passed: Bool, lines: [String]) {
+        var passed = true
+        var lines: [String] = []
+        func check(_ condition: Bool, _ message: String) {
+            let line = "\(condition ? "PASS" : "FAIL"): Add Torrent check: \(message)"
+            lines.append(line); print(line)
+            if !condition { passed = false }
+        }
+        guard let sheet = window.attachedSheet, let content = sheet.contentView, let draft = pendingImport else {
+            check(false, "Synthetic import sheet is visible")
+            return (passed, lines)
+        }
+        check(sheet.styleMask.contains(.resizable), "Native sheet allows user resizing")
+        let originalSelection = draft.selectedFiles
+        let originalRatio = draft.ratio
+        let minimum = sheet.contentMinSize
+        lines.append("Add Torrent minimum content size: \(minimum)")
+        let enlarged = NSSize(width: max(960, content.bounds.width + 200), height: max(720, content.bounds.height + 160))
+        sheet.setContentSize(enlarged)
+        try? await Task.sleep(for: .milliseconds(200))
+        content.layoutSubtreeIfNeeded()
+        check(abs(content.bounds.width - enlarged.width) < 2 && abs(content.bounds.height - enlarged.height) < 2, "Larger width and height are honored")
+        check(draft.selectedFiles == originalSelection && draft.ratio == originalRatio && !draft.unlimitedSeed && !draft.allowExisting, "Resizing preserves selection and seed options")
+        draft.selectedFiles = []
+        draft.allowExisting = true
+        draft.ratio = 100
+        try? await Task.sleep(for: .milliseconds(100))
+        sheet.setContentSize(minimum)
+        try? await Task.sleep(for: .milliseconds(200))
+        content.layoutSubtreeIfNeeded()
+        check(abs(content.bounds.width - minimum.width) < 2 && abs(content.bounds.height - minimum.height) < 2, "Sheet returns to its minimum size with empty selection and reuse options")
+        // SwiftUI action buttons are virtual controls, rather than NSButtons.
+        // Inspect the enabled Add action and minimum-size layout in this capture.
+        let captureView = content.superview ?? content
+        captureView.layoutSubtreeIfNeeded(); captureView.displayIfNeeded()
+        if let bitmap = captureView.bitmapImageRepForCachingDisplay(in: captureView.bounds) {
+            captureView.cacheDisplay(in: captureView.bounds, to: bitmap)
+            if let png = bitmap.representation(using: .png, properties: [:]) {
+                let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-UI", isDirectory: true)
+                let theme = ProcessInfo.processInfo.arguments.contains("--ui-dark") ? "dark" : "light"
+                let output = directory.appendingPathComponent("ui-smoke-\(theme)-add-torrent-minimum-empty.png")
+                do {
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    try png.write(to: output, options: .atomic)
+                    check(true, "Minimum-size empty-selection screenshot written: \(output.path)")
+                } catch { check(false, "Could not write minimum-size screenshot: \(error)") }
+            } else { check(false, "Could not encode minimum-size screenshot") }
+        } else { check(false, "Could not capture minimum-size screenshot") }
+        sheet.setContentSize(enlarged)
+        try? await Task.sleep(for: .milliseconds(200))
+        check(abs(content.bounds.width - enlarged.width) < 2 && abs(content.bounds.height - enlarged.height) < 2 && draft.selectedFiles.isEmpty && draft.allowExisting && draft.ratio == 100, "Empty-selection sheet resizes without changing reuse or ratio options")
+        draft.selectedFiles = originalSelection
+        draft.allowExisting = false
+        draft.ratio = originalRatio
+        try? await Task.sleep(for: .milliseconds(100))
+        return (passed, lines)
     }
 
     /// Exercises the native header callback and live sibling ordering using only synthetic transfers.

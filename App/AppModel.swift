@@ -390,7 +390,7 @@ import UserNotifications
             defer { draft.isAdding = false }
             do {
                 let scoped = destination.startAccessingSecurityScopedResource(); defer { if scoped { destination.stopAccessingSecurityScopedResource() } }
-                _ = try await engine.add(metainfo: draft.metainfo, destination: destination, selectedFiles: draft.selectedFiles, seedRatio: draft.unlimitedSeed ? nil : draft.ratio, allowExisting: draft.allowExisting)
+                _ = try await engine.add(metainfo: draft.metainfo, destination: destination, selectedFiles: draft.selectedFiles, seedRatio: draft.unlimitedSeed ? nil : draft.ratio, allowExisting: draft.allowExisting, startPaused: draft.selectedFiles.isEmpty)
                 pendingImport = nil
             } catch { self.error = error.localizedDescription }
         }

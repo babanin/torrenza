@@ -245,16 +245,24 @@ struct AddTorrentView: View {
                 Toggle(isOn: Binding(get: { draft.selectedFiles.contains(file.index) }, set: { if $0 { draft.selectedFiles.insert(file.index) } else { draft.selectedFiles.remove(file.index) } })) {
                     HStack { Text(file.path.joined(separator: "/")).lineLimit(1).truncationMode(.middle); Spacer(); Text(byteString(file.length)).foregroundStyle(.secondary) }
                 }
-            }.frame(minHeight: 180, maxHeight: 280).border(.quaternary)
+            }.frame(minHeight: 180, idealHeight: 280, maxHeight: .infinity).border(.quaternary)
             HStack { Button("Select All") { draft.selectedFiles = Set(draft.metainfo.files.filter { !$0.isPadding }.map(\.index)) }; Button("Select None") { draft.selectedFiles = [] }; Spacer(); Text(byteString(draft.metainfo.files.filter { draft.selectedFiles.contains($0.index) }.reduce(0) { $0 + $1.length })).foregroundStyle(.secondary) }
+            if draft.selectedFiles.isEmpty {
+                Text("No files selected. This torrent will be added paused.").font(.caption).foregroundStyle(.secondary)
+            }
             Form {
                 Toggle("Seed without a ratio limit", isOn: $draft.unlimitedSeed)
                 if !draft.unlimitedSeed { HStack { Text("Stop seeding at ratio"); TextField("Ratio", value: $draft.ratio, format: .number).frame(width: 70) } }
                 Toggle("Verify and reuse existing files", isOn: $draft.allowExisting)
-                if draft.allowExisting { Text("Existing complete files will be seeded using this choice. A ratio limit cannot be reached without downloaded-byte history; choose 0 to keep complete files stopped, or unlimited to seed them.").font(.caption).foregroundStyle(.secondary) }
+                if draft.allowExisting && !draft.selectedFiles.isEmpty { Text("Existing complete files will be seeded using this choice. A ratio limit cannot be reached without downloaded-byte history; choose 0 to keep complete files stopped, or unlimited to seed them.").font(.caption).foregroundStyle(.secondary) }
             }
-            HStack { if draft.isAdding { ProgressView().controlSize(.small); Text("Adding and verifying…").foregroundStyle(.secondary) }; Spacer(); Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction); Button("Add Torrent") { model.finishImport(draft) }.keyboardShortcut(.defaultAction).disabled(draft.destination == nil || draft.selectedFiles.isEmpty || !draft.ratio.isFinite || draft.ratio < 0 || (draft.allowExisting && !draft.unlimitedSeed && draft.ratio > 0)) }
-        }.padding(24).frame(width: 600).disabled(draft.isAdding).interactiveDismissDisabled(draft.isAdding)
+            HStack { if draft.isAdding { ProgressView().controlSize(.small); Text("Adding…").foregroundStyle(.secondary) }; Spacer(); Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction); Button("Add Torrent") { model.finishImport(draft) }.keyboardShortcut(.defaultAction).disabled(draft.destination == nil || !draft.ratio.isFinite || draft.ratio < 0 || (!draft.selectedFiles.isEmpty && draft.allowExisting && !draft.unlimitedSeed && draft.ratio > 0)) }
+        }
+        .padding(24)
+        .frame(minWidth: 600, idealWidth: 720, maxWidth: .infinity, minHeight: 560, idealHeight: 620, maxHeight: .infinity)
+        .presentationSizing(.fitted)
+        .disabled(draft.isAdding)
+        .interactiveDismissDisabled(draft.isAdding)
     }
 }
 

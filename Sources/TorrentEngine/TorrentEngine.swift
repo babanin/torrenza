@@ -67,6 +67,7 @@ final class EngineSession {
     var automaticHDD: Bool { volume.isSolidState != true }
     init(record: EngineRecord) {
         var record = record
+        if record.selectedFiles.isEmpty { record.wantedRunning = false }
         record.initializeFileUploadHistory()
         self.record = record
         fileSnapshotIndices = Dictionary(uniqueKeysWithValues: record.metainfo.files.filter { !$0.isPadding }.enumerated().map { ($0.element.index, $0.offset) })
@@ -223,7 +224,7 @@ public actor TorrentEngine {
         }
         guard sessions[metainfo.id] == nil else { throw TorrentError.storage("This torrent is already in your library") }
         let valid = Set(metainfo.files.filter { !$0.isPadding }.map(\.index))
-        guard !selectedFiles.isEmpty, selectedFiles.isSubset(of: valid) else { throw TorrentError.storage("Choose at least one valid file") }
+        guard selectedFiles.isSubset(of: valid) else { throw TorrentError.storage("Invalid file selection") }
         guard seedRatio == nil || (seedRatio!.isFinite && seedRatio! >= 0) else { throw TorrentError.invalidMetainfo("Invalid seed ratio") }
         let destination = destination.standardizedFileURL
         let requestedPaths = Set(metainfo.files.filter { selectedFiles.contains($0.index) }.map { $0.path.reduce(destination) { $0.appendingPathComponent($1) }.standardizedFileURL.path })
@@ -233,23 +234,27 @@ public actor TorrentEngine {
         }
         let scoped = destination.startAccessingSecurityScopedResource()
         let bookmark = try? destination.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
-        var record = EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloadedBytes, uploaded: uploadedBytes, wantedRunning: !startPaused, verified: PieceBitset(count: metainfo.pieceHashes.count))
+        var record = EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloadedBytes, uploaded: uploadedBytes, wantedRunning: !startPaused && !selectedFiles.isEmpty, verified: PieceBitset(count: metainfo.pieceHashes.count))
         record.volumeUUID = try? destination.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
         let session = EngineSession(record: record)
         session.securityScoped = scoped
         do {
-            if savedVerifiedPieces != nil {
+            if savedVerifiedPieces != nil && !selectedFiles.isEmpty {
                 try await Task.detached(priority: .utility) {
                     try QBittorrentImport.preflight(metainfo: metainfo, destination: destination, selectedFiles: selectedFiles)
                 }.value
             }
             try await ensureStatistics()
-            let disk = try TorrentDisk(metainfo: metainfo, destination: destination, selectedFiles: selectedFiles, allowExisting: allowExisting, requireExistingPayload: savedVerifiedPieces != nil)
-            try await disk.prepare()
-            session.disk = disk
-            try await updateOwnership(session)
+            // An empty selection keeps only metadata, without creating payloads or
+            // boundary sidecars, verifying existing files, or starting networking.
+            if !selectedFiles.isEmpty {
+                let disk = try TorrentDisk(metainfo: metainfo, destination: destination, selectedFiles: selectedFiles, allowExisting: allowExisting, requireExistingPayload: savedVerifiedPieces != nil)
+                try await disk.prepare()
+                session.disk = disk
+                try await updateOwnership(session)
+            }
             sessions[metainfo.id] = session
-            if var savedVerifiedPieces {
+            if var savedVerifiedPieces, !selectedFiles.isEmpty {
                 // Only selected payload is imported. Pieces touching skipped files may
                 // depend on qBittorrent's partfile, which is not available to our disk.
                 for index in 0..<savedVerifiedPieces.count where !session.wanted[index] {
@@ -262,7 +267,7 @@ public actor TorrentEngine {
                 }
                 session.record.verified = savedVerifiedPieces
                 await refreshProgress(session)
-            } else if allowExisting {
+            } else if allowExisting && !selectedFiles.isEmpty {
                 await verifyAll(metainfo.id)
                 if session.snapshot.state == .checking { session.snapshot.state = session.record.wantedRunning ? .queued : .paused }
             }
@@ -280,6 +285,10 @@ public actor TorrentEngine {
     public func start(_ id: String) async {
         guard !shuttingDown else { return }
         guard let session = sessions[id] else { return }
+        guard !session.record.selectedFiles.isEmpty else {
+            await pause(id)
+            return
+        }
         session.record.wantedRunning = true
         session.record.quarantineError = nil
         session.snapshot.error = nil
@@ -325,6 +334,10 @@ public actor TorrentEngine {
         guard let session = sessions[id] else { return }
         session.record.quarantineError = nil
         session.snapshot.error = nil
+        guard !session.record.selectedFiles.isEmpty else {
+            await pause(id)
+            return
+        }
         await stopSession(id, state: .checking)
         await verifyAll(id)
         if session.record.quarantineError == nil && ![.failed, .unavailable].contains(session.snapshot.state) { session.snapshot.state = session.record.wantedRunning ? .queued : .paused }
@@ -344,12 +357,13 @@ public actor TorrentEngine {
         guard !shuttingDown else { throw CancellationError() }
         guard let session = sessions[id] else { return }
         let valid = Set(session.record.metainfo.files.filter { !$0.isPadding }.map(\.index))
-        guard !selectedFiles.isEmpty, selectedFiles.isSubset(of: valid) else { throw TorrentError.storage("Choose at least one valid file") }
+        guard selectedFiles.isSubset(of: valid) else { throw TorrentError.storage("Invalid file selection") }
         for file in session.record.metainfo.files where selectedFiles.contains(file.index) && !session.record.selectedFiles.contains(file.index) {
             let path = file.path.reduce(session.record.destination) { $0.appendingPathComponent($1) }
-            if FileManager.default.fileExists(atPath: path.path) {
-                guard let owned = session.record.ownedSignatures?.first(where: { $0.path == file.path.joined(separator: "/") }) else { throw TorrentError.storage("A newly selected file already exists and is not owned by this torrent") }
-                try await TorrentDisk.validateOwnedFiles(destination: session.record.destination, signatures: [owned])
+            if let owned = session.record.ownedSignatures?.first(where: { $0.path == file.path.joined(separator: "/") }) {
+                try await TorrentDisk.validateOwnedFiles(destination: session.record.destination, signatures: [owned], allowMissing: false)
+            } else if FileManager.default.fileExists(atPath: path.path) {
+                throw TorrentError.storage("A newly selected file already exists and is not owned by this torrent")
             }
         }
         do {
@@ -362,9 +376,14 @@ public actor TorrentEngine {
             session.record.selectedFiles = selectedFiles
             session.wanted = EngineSession.wantedPieces(session.record)
             session.disk = nil
-            try await openDisk(session, allowNewFiles: true)
-            try await updateOwnership(session)
-            await verifyAll(id)
+            if selectedFiles.isEmpty {
+                session.record.wantedRunning = false
+                await refreshProgress(session)
+            } else {
+                try await openDisk(session, allowNewFiles: true)
+                try await updateOwnership(session)
+                await verifyAll(id)
+            }
             if let error = session.record.quarantineError {
                 session.snapshot.state = .failed
                 session.snapshot.error = error
@@ -408,7 +427,7 @@ public actor TorrentEngine {
                 let validFiles = Set(record.metainfo.files.filter { !$0.isPadding }.map(\.index))
                 guard identities.insert(record.metainfo.id).inserted,
                       record.verified.count == record.metainfo.pieceHashes.count,
-                      !record.selectedFiles.isEmpty, record.selectedFiles.isSubset(of: validFiles),
+                      record.selectedFiles.isSubset(of: validFiles),
                       record.downloaded >= 0, record.uploaded >= 0, record.hasValidFileUploadHistory,
                       record.seedRatio == nil || (record.seedRatio!.isFinite && record.seedRatio! >= 0) else {
                     throw TorrentError.storage("Saved transfer state is invalid")

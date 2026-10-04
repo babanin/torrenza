@@ -119,6 +119,7 @@ extension TorrentEngine {
     }
 
     func openDisk(_ session: EngineSession, allowNewFiles: Bool = false) async throws {
+        guard !session.record.selectedFiles.isEmpty else { return }
         guard session.disk == nil else { return }
         guard FileManager.default.fileExists(atPath: session.record.destination.path) else { throw TorrentError.storage("Destination volume or folder is unavailable") }
         if let expected = session.record.volumeUUID {
@@ -189,6 +190,7 @@ extension TorrentEngine {
         var hddVolumes: Set<String> = []
         for id in sessions.keys.sorted() {
             guard let session = sessions[id], session.record.wantedRunning, !session.busy, session.record.quarantineError == nil,
+                  !session.record.selectedFiles.isEmpty,
                   ![.failed, .unavailable, .checking].contains(session.snapshot.state) else { continue }
             if session.selectedComplete && session.ratioReached {
                 if session.snapshot.state != .completed { await stopSession(id, state: .completed) }
@@ -271,7 +273,7 @@ extension TorrentEngine {
     public func volumesChanged() async {
         guard !shuttingDown else { return }
         for id in Array(sessions.keys) {
-            guard let session = sessions[id], session.record.quarantineError == nil else { continue }
+            guard let session = sessions[id], !session.record.selectedFiles.isEmpty, session.record.quarantineError == nil else { continue }
             if !FileManager.default.fileExists(atPath: session.record.destination.path) {
                 await quarantine(id, error: TorrentError.storage("Destination volume is unavailable"))
             }
