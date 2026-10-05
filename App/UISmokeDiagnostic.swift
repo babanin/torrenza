@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import ApplicationServices
 import Foundation
 import SwiftUI
 import TorrentCore
@@ -17,6 +18,10 @@ import TorrentStorage
         let addTorrent = arguments.contains("--ui-add-torrent")
         let multiselect = arguments.contains("--ui-multiselect-check")
         let sortCheck = arguments.contains("--ui-sort-check")
+        let refreshProgress = arguments.contains("--ui-refresh-progress")
+        let refreshResultCapture = arguments.contains("--ui-refresh-result")
+        let refreshSelection = arguments.contains("--ui-refresh-selection")
+        let refreshCheck = arguments.contains("--ui-refresh-check") || refreshProgress || refreshResultCapture || refreshSelection
         let fixtureName = longProfile ? String(repeating: "Research ", count: 9).prefix(80).description : "Research"
         let fixtureProfile = ProfileDescriptor(id: "ui-research", name: fixtureName, directory: FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-UI/Research", isDirectory: true))
         activeProfile = fixtureProfile
@@ -93,9 +98,17 @@ import TorrentStorage
             }
             let importChecksPassed = !qbImport || installDebugQBittorrentImport()
             if addTorrent { installDebugAddTorrent() }
+            var refreshResult: (passed: Bool, lines: [String]) = (true, [])
+            if refreshCheck {
+                if let outline = findOutline(view) {
+                    refreshResult = await checkDebugTorrentRefresh(outline: outline, window: window)
+                } else {
+                    refreshResult = (false, ["FAIL: Torrent refresh check: Torrent outline was not found"])
+                }
+            }
             try? await Task.sleep(for: .milliseconds(600))
             let addTorrentResult = addTorrent ? await checkDebugAddTorrent(window: window) : (passed: true, lines: [String]())
-            let contentToCapture = qbImport || addTorrent ? (window.attachedSheet?.contentView ?? view) : view
+            let contentToCapture = qbImport || addTorrent || refreshCheck ? (window.attachedSheet?.contentView ?? view) : view
             let captureView = contentToCapture.superview ?? contentToCapture
             captureView.layoutSubtreeIfNeeded(); captureView.displayIfNeeded()
             guard let bitmap = captureView.bitmapImageRepForCachingDisplay(in: captureView.bounds) else { return }
@@ -103,13 +116,15 @@ import TorrentStorage
             guard let png = bitmap.representation(using: .png, properties: [:]) else { return }
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-UI", isDirectory: true)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let basename = "ui-smoke-\(dark ? "dark" : "light")\(narrow ? "-narrow" : wide ? "-wide" : "")\(longProfile ? "-long-profile" : "")\(fileBadges ? "-file-badges" : "")\(qbImport ? "-qb-import" : "")\(addTorrent ? "-add-torrent" : "")\(arguments.contains("--ui-qb-skip-verification") ? "-unchecked" : "")\(multiselect ? "-multiselect" : "")\(sortCheck ? "-sort" : "")"
+            let refreshSuffix = refreshSelection ? "-refresh-selection" : refreshResultCapture ? "-refresh-result" : refreshProgress ? "-refresh-progress" : refreshCheck ? "-refresh" : ""
+            let basename = "ui-smoke-\(dark ? "dark" : "light")\(narrow ? "-narrow" : wide ? "-wide" : "")\(longProfile ? "-long-profile" : "")\(fileBadges ? "-file-badges" : "")\(qbImport ? "-qb-import" : "")\(addTorrent ? "-add-torrent" : "")\(arguments.contains("--ui-qb-skip-verification") ? "-unchecked" : "")\(multiselect ? "-multiselect" : "")\(sortCheck ? "-sort" : "")\(refreshSuffix)"
             let output = directory.appendingPathComponent(basename + ".png")
             try? png.write(to: output, options: .atomic)
             var geometry = ["Window content size: \(view.bounds.size)", "Profile name: \(fixtureName)", "Toolbar item count: \(window.toolbar?.items.count ?? 0)"]
             geometry.append(contentsOf: multiselectResult.lines)
             geometry.append(contentsOf: sortResult.lines)
             geometry.append(contentsOf: addTorrentResult.lines)
+            geometry.append(contentsOf: refreshResult.lines)
             @MainActor func describe(_ node: NSView) -> String {
                 "frame: \(node.convert(node.bounds, to: captureView)), hidden: \(node.isHiddenOrHasHiddenAncestor), visible rect: \(node.visibleRect)"
             }
@@ -192,17 +207,183 @@ import TorrentStorage
             try? geometry.joined(separator: "\n").write(to: directory.appendingPathComponent(basename + ".txt"), atomically: true, encoding: .utf8)
             let importSheetVisible = !qbImport || window.attachedSheet != nil
             if qbImport { print("\(importSheetVisible ? "PASS" : "FAIL"): qBittorrent import sheet is visible") }
-            captured = searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed && sortResult.passed && uploadChecksPassed && addTorrentResult.passed
+            captured = searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed && sortResult.passed && uploadChecksPassed && addTorrentResult.passed && refreshResult.passed
             print("UI snapshot: \(output.path)")
         }
     }
 
-    private func installDebugAddTorrent() {
+    /// Uses native menu construction and synthetic rows without fetching metadata or opening a real profile.
+    private func checkDebugTorrentRefresh(outline: NSOutlineView, window: NSWindow) async -> (passed: Bool, lines: [String]) {
+        var passed = true
+        var lines: [String] = []
+        func check(_ condition: Bool, _ message: String) {
+            let line = "\(condition ? "PASS" : "FAIL"): Torrent refresh check: \(message)"
+            lines.append(line); print(line)
+            if !condition { passed = false }
+        }
+        guard let coordinator = outline.delegate as? TorrentOutlineView.Coordinator else {
+            check(false, "Outline coordinator is available")
+            return (passed, lines)
+        }
+        let nodes = (0..<outline.numberOfRows).compactMap { outline.item(atRow: $0) as? TorrentTreeNode }
+        let torrentNodes = nodes.filter { if case .torrent = $0.kind { return true }; return false }
+        guard let torrent = torrentNodes.first, let secondTorrent = torrentNodes.dropFirst().first,
+              let file = nodes.first(where: { if case .file = $0.kind { return true }; return false }) else {
+            check(false, "Fixture contains two torrent rows and a file row")
+            return (passed, lines)
+        }
+        func select(_ selected: [TorrentTreeNode]) {
+            outline.selectRowIndexes(IndexSet(selected.map { outline.row(forItem: $0) }), byExtendingSelection: false)
+        }
+        func checkMenu(for node: TorrentTreeNode, enabled: Bool, message: String) {
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            coordinator.updateContextMenu(menu, row: outline.row(forItem: node))
+            let refresh = menu.items.first { $0.title == "Refresh Torrent" }
+            let edit = menu.items.first { $0.title == "Edit Refresh Source…" }
+            check(refresh?.isEnabled == enabled && edit?.isEnabled == enabled, message)
+        }
+        select([torrent])
+        check(canRefreshSelection, "A single torrent row enables refresh")
+        checkMenu(for: torrent, enabled: true, message: "Native menu offers enabled Refresh Torrent and Edit Refresh Source")
+        select([file])
+        check(!canRefreshSelection, "A file row cannot refresh its parent torrent")
+        checkMenu(for: file, enabled: false, message: "Native menu disables refresh actions for file rows")
+        select([torrent, secondTorrent])
+        check(!canRefreshSelection, "Multiple torrent rows disable refresh")
+        checkMenu(for: torrent, enabled: false, message: "Native context menu preserves multiple selection and disables refresh")
+        select([torrent, file])
+        check(!canRefreshSelection, "A torrent and file selection cannot refresh ambiguously")
+        select([torrent])
+        editRefreshSourceSelection()
+        if let draft = refreshSourceEditor, case .transfer(let id, let refreshAfterSave) = draft.purpose {
+            check(id == torrent.transferIDs.first && !refreshAfterSave, "Edit Refresh Source opens an editor for the selected torrent")
+        } else { check(false, "Edit Refresh Source opens its source editor") }
+        refreshSourceEditor = nil
+        try? await Task.sleep(for: .milliseconds(200))
+        beginRefreshSelection()
+        if let draft = refreshSourceEditor, case .transfer(let id, let refreshAfterSave) = draft.purpose {
+            check(id == torrent.transferIDs.first && refreshAfterSave && draft.sourceText.isEmpty,
+                  "Refreshing a torrent without a source asks for its URL once")
+        } else { check(false, "Missing-source refresh opens its source editor") }
+        check(refreshOperation == nil, "Missing-source prompt does not start network or engine work")
+        check(!canSwitchProfile && !canImportFromQBittorrent && !canOpenTorrentURL && !canOperateTransfers,
+              "Source draft prevents profile switches, overlapping imports, and transfer actions")
+        try? await Task.sleep(for: .milliseconds(300))
+        check(window.attachedSheet != nil, "Refresh source editor is presented as a native sheet")
+        let sourceDraft = refreshSourceEditor
+        refreshSourceEditor = nil
+        try? await Task.sleep(for: .milliseconds(200))
+        let operation = TorrentRefreshOperation(title: "Refresh Open Video Collection", profileID: activeProfile?.id ?? "ui-research")
+        refreshOperation = operation
+        check(!canRefreshSelection && !canSwitchProfile && !canImportFromQBittorrent && !canOpenTorrentURL && !canOperateTransfers,
+              "Refresh operation prevents overlapping refresh, import, profile, and transfer actions")
+        checkMenu(for: torrent, enabled: false, message: "Native menu disables refresh and source editing during a refresh")
+        let operationMenu = NSMenu()
+        operationMenu.autoenablesItems = false
+        coordinator.updateContextMenu(operationMenu, row: outline.row(forItem: torrent))
+        check(["Start", "Pause", "Recheck"].allSatisfy { title in operationMenu.items.first { $0.title == title }?.isEnabled == false },
+              "Native menu disables Start, Pause, and Recheck during a refresh")
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--ui-refresh-selection") {
+            operation.isWorking = false
+            operation.status = "Select at least one file to download from the updated torrent."
+            operation.selectionMetainfo = debugVideoCollectionMetainfo()
+            operation.selectedFiles = []
+            check(operation.selectionMetainfo?.files.count == 12 && operation.selectedFiles.isEmpty,
+                  "Synthetic updated torrent presents its files with an empty selection")
+        } else if arguments.contains("--ui-refresh-result") {
+            operation.isWorking = false
+            operation.status = "Torrent refreshed."
+            check(!operation.isWorking && operation.error == nil, "Successful result is ready to dismiss")
+        } else if arguments.contains("--ui-refresh-progress") {
+            check(operation.isWorking && operation.status == "Fetching torrent…", "Fetching progress is shown before metadata arrives")
+        } else {
+            refreshOperation = nil
+            refreshSourceEditor = sourceDraft
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        check(window.attachedSheet != nil, "Requested refresh state is presented as a native sheet")
+        // Query the OS-visible accessibility tree: SwiftUI action buttons are virtual elements.
+        // Run AX requests off the main actor so this app can service its own accessibility requests.
+        func buttonEnabled(_ title: String) async -> Bool? {
+            let processID = getpid()
+            let result = await Task.detached(priority: .userInitiated) { () -> (Bool?, [String]) in
+                let application = AXUIElementCreateApplication(processID)
+                AXUIElementSetMessagingTimeout(application, 1)
+                func attribute(_ element: AXUIElement, _ name: String) -> (AXError, CFTypeRef?) {
+                    var value: CFTypeRef?
+                    let error = AXUIElementCopyAttributeValue(element, name as CFString, &value)
+                    return (error, value)
+                }
+                let windows = attribute(application, kAXWindowsAttribute)
+                guard windows.0 == .success, let roots = windows.1 as? [AXUIElement] else {
+                    return (nil, ["Refresh accessibility windows query failed: AXError \(windows.0.rawValue), trusted: \(AXIsProcessTrusted())"])
+                }
+                var queue = roots.map { ($0, 0) }
+                var visited: [AXUIElement] = []
+                var cursor = 0
+                var diagnostics: [String] = []
+                let deadline = Date().addingTimeInterval(5)
+                while cursor < queue.count && visited.count < 1000 && Date() < deadline {
+                    let (element, depth) = queue[cursor]
+                    cursor += 1
+                    guard depth <= 12, !visited.contains(where: { CFEqual($0, element) }) else { continue }
+                    visited.append(element)
+                    let role = attribute(element, kAXRoleAttribute)
+                    if role.0 == .apiDisabled || role.0 == .cannotComplete {
+                        return (nil, ["Refresh accessibility role query failed: AXError \(role.0.rawValue), trusted: \(AXIsProcessTrusted())"])
+                    }
+                    if role.1 as? String == kAXButtonRole {
+                        let name = attribute(element, kAXTitleAttribute).1 as? String
+                        let description = attribute(element, kAXDescriptionAttribute).1 as? String
+                        if name == title || description == title {
+                            let enabled = attribute(element, kAXEnabledAttribute)
+                            guard enabled.0 == .success, let value = enabled.1 as? Bool else {
+                                return (nil, ["Refresh accessibility enabled query failed for \(title): AXError \(enabled.0.rawValue)"])
+                            }
+                            return (value, ["Refresh accessibility button: \(title), AXEnabled: \(value)"])
+                        }
+                    }
+                    guard depth < 12 else { continue }
+                    for name in ["AXSheets", kAXChildrenAttribute] {
+                        if let children = attribute(element, name).1 as? [AXUIElement] {
+                            queue.append(contentsOf: children.prefix(max(0, 1000 - queue.count)).map { ($0, depth + 1) })
+                        }
+                    }
+                }
+                diagnostics.append("Refresh accessibility button not found: \(title); inspected \(visited.count) elements, trusted: \(AXIsProcessTrusted())")
+                return (nil, diagnostics)
+            }.value
+            lines.append(contentsOf: result.1)
+            return result.0
+        }
+        if window.attachedSheet?.contentView != nil {
+            if arguments.contains("--ui-refresh-selection") {
+                check(await buttonEnabled("Apply Update") == false, "Empty file selection disables Apply Update")
+                operation.selectedFiles = [0]
+                try? await Task.sleep(for: .milliseconds(120))
+                check(await buttonEnabled("Apply Update") == true, "Selecting a file enables Apply Update")
+                operation.selectedFiles = []
+                try? await Task.sleep(for: .milliseconds(120))
+            } else if arguments.contains("--ui-refresh-result") {
+                check(await buttonEnabled("Done") == true, "Successful result offers Done")
+            } else if arguments.contains("--ui-refresh-progress") {
+                check(await buttonEnabled("Cancel") == true, "Fetching progress offers Cancel")
+            }
+        }
+        return (passed, lines)
+    }
+
+    private func debugVideoCollectionMetainfo() -> TorrentMetainfo {
         let files: [TorrentFile] = (0..<12).map { index in
             TorrentFile(index: index, path: ["Open Video Collection", "Season 02", "Open.Video.Collection.S02E\(String(format: "%02d", index + 1)).1080p.WEB-DL.Long.Descriptive.Filename.mkv"], length: 4_194_304, offset: Int64(index) * 4_194_304)
         }
-        let metainfo = TorrentMetainfo(infoHash: Data(repeating: 7, count: 20), rawInfo: Data(), name: "Open Video Collection (Season 2) WEB-DL 1080p", pieceLength: 4_194_304, pieceHashes: files.map { _ in Data(repeating: 7, count: 20) }, files: files, trackerTiers: [], isPrivate: true, isMultiFile: true)
-        let draft = ImportDraft(metainfo: metainfo, ratio: 1)
+        return TorrentMetainfo(infoHash: Data(repeating: 7, count: 20), rawInfo: Data(), name: "Open Video Collection (Season 2) WEB-DL 1080p", pieceLength: 4_194_304, pieceHashes: files.map { _ in Data(repeating: 7, count: 20) }, files: files, trackerTiers: [], isPrivate: true, isMultiFile: true)
+    }
+
+    private func installDebugAddTorrent() {
+        let draft = ImportDraft(metainfo: debugVideoCollectionMetainfo(), ratio: 1)
         draft.destination = FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-UI/Downloads", isDirectory: true)
         pendingImport = draft
     }

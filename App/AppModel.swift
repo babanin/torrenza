@@ -25,11 +25,13 @@ import UserNotifications
     @ObservationIgnored private var shutdownTask: Task<Void, Never>?
     @ObservationIgnored private var profileTask: Task<Void, Never>?
     @ObservationIgnored private var operations: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var scheduledRefresh: (source: TorrentRefreshSource, id: String, name: String)?
     private var filePickerOpen = false
     private var operationCount = 0
     private var terminating = false
     private var canChangeProfile: Bool {
-        !isSwitchingProfile && !terminating && !filePickerOpen && operationCount == 0 && !isImporting && pendingImport == nil && qbittorrentImport == nil && !showMagnet && !confirmRemoval
+        !isSwitchingProfile && !terminating && !filePickerOpen && operationCount == 0 && !isImporting && pendingImport == nil && qbittorrentImport == nil && !showMagnet && !confirmRemoval && refreshSourceEditor == nil && refreshOperation == nil
     }
     var canSwitchProfile: Bool { canChangeProfile && profileEditor == nil }
 
@@ -72,6 +74,16 @@ import UserNotifications
     }
     var confirmRemoval = false
     var deleteFiles = false
+    var refreshSourceEditor: TorrentRefreshSourceDraft?
+    var refreshOperation: TorrentRefreshOperation?
+    var torrentSelectionRequest: String?
+    var canOperateTransfers: Bool { isProfileReady && !isSwitchingProfile && !terminating && refreshOperation == nil && refreshSourceEditor == nil }
+    var canOpenTorrentURL: Bool { isProfileReady && canChangeProfile && profileEditor == nil }
+    var refreshSelection: TransferSnapshot? {
+        guard selectedNodes.count == 1, case .torrent(let id) = selectedNodes[0].kind else { return nil }
+        return transfers.first { $0.id == id && $0.state != .resolving }
+    }
+    var canRefreshSelection: Bool { canOpenTorrentURL && refreshSelection != nil }
     var notificationsEnabled: Bool {
         get { uiState.notificationsEnabled }
         set { uiState.notificationsEnabled = newValue }
@@ -106,6 +118,10 @@ import UserNotifications
 
     static func applicationModel() -> AppModel {
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--refresh-fetch-smoke") || ProcessInfo.processInfo.arguments.contains("--refresh-rutracker-smoke") {
+            let id = UUID().uuidString
+            return AppModel(root: FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-Refresh-Fetch/\(id)", isDirectory: true), defaults: UserDefaults(suiteName: "dev.torrenza.refresh-fetch-smoke.\(id)")!)
+        }
         if ProcessInfo.processInfo.arguments.contains("--profile-smoke") {
             let id = UUID().uuidString
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-Profile-Smoke/\(id)", isDirectory: true)
@@ -120,6 +136,14 @@ import UserNotifications
     func launch() {
         guard !started else { return }; started = true
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--refresh-rutracker-smoke") {
+            Task { await runRuTrackerFetchSmoke() }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--refresh-fetch-smoke") {
+            Task { await runRefreshFetchSmoke() }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--ui-fixture") {
             isSwitchingProfile = false; isProfileReady = true
             installDebugFixture()
@@ -322,7 +346,7 @@ import UserNotifications
         }
     }
     func openFile() {
-        guard isProfileReady, !isSwitchingProfile, !terminating, !filePickerOpen, profileEditor == nil, qbittorrentImport == nil else { return }
+        guard isProfileReady, !isSwitchingProfile, !terminating, !filePickerOpen, profileEditor == nil, qbittorrentImport == nil, refreshSourceEditor == nil, refreshOperation == nil else { return }
         filePickerOpen = true
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.torrent]; panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
         panel.directoryURL = uiState.lastTorrentDirectory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
@@ -358,11 +382,12 @@ import UserNotifications
         importQueue += supported; processNextImport()
     }
     func submitMagnet() {
+        guard refreshOperation == nil, refreshSourceEditor == nil, !terminating else { return }
         guard let url = URL(string: magnetText.trimmingCharacters(in: .whitespacesAndNewlines)), url.scheme?.lowercased() == "magnet" else { error = "Enter a valid magnet link."; return }
         showMagnet = false; magnetText = ""; open([url])
     }
     private func processNextImport() {
-        guard isProfileReady, !isSwitchingProfile, !terminating, !isImporting, profileEditor == nil, pendingImport == nil, qbittorrentImport == nil, !importQueue.isEmpty else { return }
+        guard isProfileReady, !isSwitchingProfile, !terminating, !isImporting, profileEditor == nil, pendingImport == nil, qbittorrentImport == nil, refreshSourceEditor == nil, refreshOperation == nil, !importQueue.isEmpty else { return }
         let url = importQueue.removeFirst(); isImporting = true
         let engine = self.engine
         importTask = Task {
@@ -390,7 +415,12 @@ import UserNotifications
             defer { draft.isAdding = false }
             do {
                 let scoped = destination.startAccessingSecurityScopedResource(); defer { if scoped { destination.stopAccessingSecurityScopedResource() } }
-                _ = try await engine.add(metainfo: draft.metainfo, destination: destination, selectedFiles: draft.selectedFiles, seedRatio: draft.unlimitedSeed ? nil : draft.ratio, allowExisting: draft.allowExisting, startPaused: draft.selectedFiles.isEmpty)
+                var metainfo = draft.metainfo
+                if !draft.sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    guard let sourceURL = URL(string: draft.sourceText.trimmingCharacters(in: .whitespacesAndNewlines)) else { throw TorrentError.invalidMetainfo("Enter a valid torrent source URL.") }
+                    metainfo.refreshSource = try TorrentRefreshSource(url: sourceURL)
+                }
+                _ = try await engine.add(metainfo: metainfo, destination: destination, selectedFiles: draft.selectedFiles, seedRatio: draft.unlimitedSeed ? nil : draft.ratio, allowExisting: draft.allowExisting, startPaused: draft.selectedFiles.isEmpty)
                 pendingImport = nil
             } catch { self.error = error.localizedDescription }
         }
@@ -415,10 +445,11 @@ import UserNotifications
         qbittorrentImport = nil
     }
     func qbittorrentImportDismissed() { processNextImport() }
-    func startSelection() { let ids = selectedIDs; perform { engine in for id in ids { await engine.start(id) } } }
-    func pauseSelection() { let ids = selectedIDs; perform { engine in for id in ids { await engine.pause(id) } } }
-    func recheckSelection() { let ids = selectedIDs; perform { engine in for id in ids { await engine.recheck(id) } } }
+    func startSelection() { guard canOperateTransfers else { return }; let ids = selectedIDs; perform { engine in for id in ids { await engine.start(id) } } }
+    func pauseSelection() { guard canOperateTransfers else { return }; let ids = selectedIDs; perform { engine in for id in ids { await engine.pause(id) } } }
+    func recheckSelection() { guard canOperateTransfers else { return }; let ids = selectedIDs; perform { engine in for id in ids { await engine.recheck(id) } } }
     func removeSelection() {
+        guard canOperateTransfers else { return }
         let ids = selectedIDs, delete = deleteFiles
         perform { [self] engine in
             do { for id in ids { try await engine.remove(id, deleteFiles: delete) } }
@@ -435,11 +466,144 @@ import UserNotifications
         NSWorkspace.shared.activateFileViewerSelecting([activeProfile.databaseURL])
     }
     func setFile(_ index: Int, selected: Bool, transfer: TransferSnapshot) {
+        guard canOperateTransfers else { return }
         var selectedFiles = Set(transfer.files.filter(\.selected).map(\.id))
         if selected { selectedFiles.insert(index) } else { selectedFiles.remove(index) }
         perform { [self] engine in do { try await engine.setSelectedFiles(transfer.id, selectedFiles: selectedFiles) } catch { self.error = error.localizedDescription } }
     }
-    func setRatio(_ ratio: Double?, transfer: TransferSnapshot) { perform { engine in await engine.setSeedRatio(transfer.id, ratio: ratio) } }
+    func setRatio(_ ratio: Double?, transfer: TransferSnapshot) { guard canOperateTransfers else { return }; perform { engine in await engine.setSeedRatio(transfer.id, ratio: ratio) } }
+    func openTorrentURL() {
+        guard canOpenTorrentURL else { return }
+        refreshSourceEditor = TorrentRefreshSourceDraft(purpose: .newImport)
+    }
+    func openMagnet() {
+        guard canOpenTorrentURL else { return }
+        showMagnet = true
+    }
+    func beginRefreshSelection() {
+        guard canRefreshSelection, let transfer = refreshSelection else { return }
+        if let source = transfer.refreshSource { fetchTorrent(source: source, replacing: transfer.id, name: transfer.name) }
+        else { refreshSourceEditor = TorrentRefreshSourceDraft(purpose: .transfer(id: transfer.id, refreshAfterSave: true)) }
+    }
+    func editRefreshSourceSelection() {
+        guard canRefreshSelection, let transfer = refreshSelection else { return }
+        refreshSourceEditor = TorrentRefreshSourceDraft(purpose: .transfer(id: transfer.id, refreshAfterSave: false), sourceText: transfer.refreshSource?.url.absoluteString ?? "")
+    }
+    func saveRefreshSource() {
+        guard let draft = refreshSourceEditor, !draft.isSaving, isProfileReady, !isSwitchingProfile, !terminating else { return }
+        do {
+            guard let url = URL(string: draft.sourceText.trimmingCharacters(in: .whitespacesAndNewlines)) else { throw TorrentError.invalidMetainfo("Enter a valid torrent source URL.") }
+            let source = try TorrentRefreshSource(url: url)
+            switch draft.purpose {
+            case .newImport:
+                scheduledRefresh = (source, "", "Open Torrent URL")
+                refreshSourceEditor = nil
+            case .transfer(let id, let refreshAfterSave):
+                draft.isSaving = true
+                perform { [self] target in
+                    defer { draft.isSaving = false }
+                    do {
+                        try await target.setRefreshSource(source, for: id)
+                        guard !terminating else { return }
+                        if refreshAfterSave { scheduledRefresh = (source, id, transfers.first { $0.id == id }?.name ?? "Torrent") }
+                        refreshSourceEditor = nil
+                    } catch { draft.error = error.localizedDescription }
+                }
+            }
+        } catch { draft.error = error.localizedDescription }
+    }
+    func refreshSourceEditorDismissed() {
+        if let request = scheduledRefresh {
+            scheduledRefresh = nil
+            guard !terminating else { return }
+            fetchTorrent(source: request.source, replacing: request.id.isEmpty ? nil : request.id, name: request.name)
+        } else { processNextImport() }
+    }
+    private func fetchTorrent(source: TorrentRefreshSource, replacing id: String?, name: String) {
+        guard isProfileReady, !isSwitchingProfile, !terminating, refreshOperation == nil, let profileID = activeProfile?.id else { return }
+        let target = engine
+        let operation = TorrentRefreshOperation(title: id == nil ? "Open Torrent URL" : "Refresh \(name)", profileID: profileID)
+        operation.replacingID = id
+        refreshOperation = operation
+        operationCount += 1
+        refreshTask = Task { [self] in
+            defer { operation.isWorking = false; operationCount -= 1; refreshTask = nil }
+            do {
+                let bytes = try await operation.fetcher.fetch(source: source)
+                try Task.checkCancellation()
+                var metainfo = try await target.inspect(torrent: bytes)
+                metainfo.refreshSource = source
+                if let id {
+                    operation.isApplying = true
+                    operation.status = "Verifying and applying update…"
+                    let newID: String
+                    do { newID = try await target.refresh(id: id, metainfo: metainfo) }
+                    catch is TorrentRefreshSelectionRequired {
+                        operation.selectionMetainfo = metainfo
+                        operation.status = "Your selected files are no longer in this torrent. Choose files to download."
+                        return
+                    }
+                    operation.status = newID == id ? "Already up to date." : "Torrent refreshed."
+                    if newID != id {
+                        // A completed-only filter would hide newly added episodes.
+                        filter = .all
+                        torrentSelectionRequest = newID
+                    }
+                } else {
+                    operation.importedMetainfo = metainfo
+                    operation.status = "Torrent fetched. Continue to choose files and a destination."
+                }
+            } catch is CancellationError {
+                operation.status = "Refresh cancelled."
+            } catch TorrentError.cancelled {
+                operation.status = "Refresh cancelled."
+            } catch let error as URLError where error.code == .cancelled {
+                operation.status = "Refresh cancelled."
+            } catch {
+                operation.status = "Could not refresh torrent."
+                operation.error = error.localizedDescription
+            }
+        }
+    }
+    func cancelTorrentRefresh() {
+        refreshOperation?.fetcher.cancel()
+        refreshTask?.cancel()
+    }
+    func applyRefreshFileSelection() {
+        guard let operation = refreshOperation, !operation.isWorking, let metainfo = operation.selectionMetainfo,
+              let id = operation.replacingID, !operation.selectedFiles.isEmpty, !terminating else { return }
+        let target = engine, selected = operation.selectedFiles
+        operation.isWorking = true
+        operation.error = nil
+        operation.status = "Verifying and applying update…"
+        operationCount += 1
+        refreshTask = Task { [self] in
+            defer { operation.isWorking = false; operationCount -= 1; refreshTask = nil }
+            do {
+                let newID = try await target.refresh(id: id, metainfo: metainfo, selectedFiles: selected)
+                operation.selectionMetainfo = nil
+                operation.status = "Torrent refreshed."
+                filter = .all
+                torrentSelectionRequest = newID
+            } catch is CancellationError { operation.status = "Refresh cancelled." }
+            catch { operation.status = "Could not refresh torrent."; operation.error = error.localizedDescription }
+        }
+    }
+    func refreshOperationDismissed() {
+        if let metainfo = finishedRemoteImport, !terminating { pendingImport = ImportDraft(metainfo: metainfo, ratio: settings.defaultSeedRatio) }
+        finishedRemoteImport = nil
+        processNextImport()
+    }
+    @ObservationIgnored private var finishedRemoteImport: TorrentMetainfo?
+    func dismissTorrentRefresh() {
+        guard let operation = refreshOperation, !operation.isWorking else { return }
+        finishedRemoteImport = operation.importedMetainfo
+        refreshOperation = nil
+    }
+    func signOutOfRuTracker() {
+        guard canOpenTorrentURL, let profileID = activeProfile?.id else { return }
+        perform { _ in await TorrentRefreshFetcher(profileID: profileID).signOut() }
+    }
     func shutdown() async {
         if let shutdownTask { await shutdownTask.value; return }
         terminating = true
@@ -460,6 +624,8 @@ import UserNotifications
         await qbittorrentImport?.cancelScanning()
         importTask?.cancel()
         await importTask?.value
+        cancelTorrentRefresh()
+        await refreshTask?.value
         for operation in Array(operations.values) { await operation.value }
         qbittorrentImport?.releaseAccess()
         observation?.cancel()
@@ -509,7 +675,8 @@ enum ProfileEditor: String, Identifiable {
     var unlimitedSeed = false
     var allowExisting = false
     var isAdding = false
-    init(metainfo: TorrentMetainfo, ratio: Double) { self.metainfo = metainfo; self.ratio = ratio; selectedFiles = Set(metainfo.files.filter { !$0.isPadding }.map(\.index)) }
+    var sourceText: String
+    init(metainfo: TorrentMetainfo, ratio: Double) { self.metainfo = metainfo; self.ratio = ratio; selectedFiles = Set(metainfo.files.filter { !$0.isPadding }.map(\.index)); sourceText = metainfo.refreshSource?.url.absoluteString ?? "" }
 }
 
 extension UTType { static let torrent = UTType(importedAs: "org.bittorrent.torrent", conformingTo: .data) }

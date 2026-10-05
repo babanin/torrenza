@@ -20,14 +20,14 @@ public actor TorrentDisk {
     public let selectedFiles: Set<Int>
     public let destination: URL
 
-    public init(metainfo: TorrentMetainfo, destination: URL, selectedFiles: Set<Int>, allowExisting: Bool = false, requireExistingPayload: Bool = false, requireExistingSidecars: Bool = false) throws {
+    public init(metainfo: TorrentMetainfo, destination: URL, selectedFiles: Set<Int>, allowExisting: Bool = false, requireExistingPayload: Bool = false, requireExistingSidecars: Bool = false, allowedExistingSignatures: [DiskSignature]? = nil) throws {
         try DiskWorker.validate(metainfo)
         guard !(requireExistingPayload || requireExistingSidecars) || allowExisting else { throw TorrentError.storage("Existing payload mode requires permission to reuse files") }
         guard selectedFiles.isSubset(of: Set(metainfo.files.filter { !$0.isPadding }.map(\.index))) else { throw TorrentError.storage("Invalid file selection") }
         self.metainfo = metainfo
         self.destination = destination
         self.selectedFiles = selectedFiles
-        self.worker = DiskWorker(meta: metainfo, destination: destination, selected: selectedFiles, allowExisting: allowExisting, requireExistingPayload: requireExistingPayload, requireExistingSidecars: requireExistingSidecars)
+        self.worker = DiskWorker(meta: metainfo, destination: destination, selected: selectedFiles, allowExisting: allowExisting, requireExistingPayload: requireExistingPayload, requireExistingSidecars: requireExistingSidecars, allowedExistingSignatures: allowedExistingSignatures)
     }
 
     private func perform<T: Sendable>(_ operation: @escaping @Sendable (DiskWorker) throws -> T) async throws -> T {
@@ -50,6 +50,13 @@ public actor TorrentDisk {
     public func close() async {
         let worker = worker
         await withCheckedContinuation { continuation in queue.async { worker.close(); continuation.resume() } }
+    }
+
+    /// Roll back only payload/sidecars created by this preparation. Cleanup is
+    /// allowed even when its caller was cancelled, and never removes replacements.
+    public func rollbackPreparation() async {
+        let worker = worker
+        await withCheckedContinuation { continuation in queue.async { worker.rollbackPreparation(); continuation.resume() } }
     }
 
     public func fileSnapshots(verified: PieceBitset) -> [FileSnapshot] {
@@ -98,6 +105,7 @@ private final class DiskWorker: @unchecked Sendable {
     let allowExisting: Bool
     let requireExistingSidecars: Bool
     let requireExistingPayload: Bool
+    let allowedExistingSignatures: [String: DiskSignature]?
     let totalLength: Int64
     var rootFD: Int32 = -1
     var rootIdentity: (UInt64, UInt64)?
@@ -109,11 +117,13 @@ private final class DiskWorker: @unchecked Sendable {
     var prepared = false
     var dirty = Set<String>()
     var dirtyDirectories = Set<String>()
+    var createdIdentities: [String: (UInt64, UInt64)] = [:]
     static let maxOperation = 1_048_576
 
-    init(meta: TorrentMetainfo, destination: URL, selected: Set<Int>, allowExisting: Bool, requireExistingPayload: Bool, requireExistingSidecars: Bool) {
+    init(meta: TorrentMetainfo, destination: URL, selected: Set<Int>, allowExisting: Bool, requireExistingPayload: Bool, requireExistingSidecars: Bool, allowedExistingSignatures: [DiskSignature]?) {
         self.meta = meta; self.destination = destination; self.selected = selected; self.allowExisting = allowExisting; self.requireExistingPayload = requireExistingPayload; self.requireExistingSidecars = requireExistingSidecars
         self.totalLength = meta.totalLength
+        self.allowedExistingSignatures = allowedExistingSignatures.map { Dictionary($0.map { ($0.path, $0) }, uniquingKeysWith: { _, latest in latest }) }
     }
     deinit { close() }
     static func validate(_ meta: TorrentMetainfo) throws {
@@ -169,6 +179,12 @@ private final class DiskWorker: @unchecked Sendable {
                 guard fd >= 0 else { throw failure("\(existingPayload ? "Open" : "Create") \(path)") }; defer { Darwin.close(fd) }
                 var info = stat(); guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { throw TorrentError.storage("Destination is not a regular file") }
                 if created { newlyCreated[path] = (UInt64(info.st_dev), info.st_ino) }
+                if created, allowedExistingSignatures?[path] != nil { throw TorrentError.storage("Owned file is missing: \(path)") }
+                if !created, let allowedExistingSignatures {
+                    guard let expected = allowedExistingSignatures[path], expected.device == UInt64(info.st_dev), expected.inode == info.st_ino else {
+                        throw TorrentError.storage("Existing file is not owned by the original torrent: \(path)")
+                    }
+                }
                 if !created && info.st_size != length { throw TorrentError.storage("Existing file size does not match torrent: \(path)") }
                 if created {
                     guard ftruncate(fd, length) == 0 else { throw failure("Size \(path)") }
@@ -177,6 +193,7 @@ private final class DiskWorker: @unchecked Sendable {
                 }
                 identities[path] = (UInt64(info.st_dev), info.st_ino)
             }
+            createdIdentities = newlyCreated
             prepared = true
         } catch {
             // Do not strand half-created payloads after failed preparation, and never
@@ -191,6 +208,18 @@ private final class DiskWorker: @unchecked Sendable {
             }
             close(); throw error
         }
+    }
+    func rollbackPreparation() {
+        for (path, identity) in createdIdentities {
+            let components = path.split(separator: "/").map(String.init)
+            guard let parent = try? directory(Array(components.dropLast()), create: false) else { continue }
+            var info = stat()
+            if fstatat(parent, components.last!, &info, AT_SYMLINK_NOFOLLOW) == 0,
+               UInt64(info.st_dev) == identity.0, info.st_ino == identity.1 { _ = unlinkat(parent, components.last!, 0) }
+            Darwin.close(parent)
+        }
+        createdIdentities.removeAll()
+        close()
     }
     func buildLayout() {
         segments = []; fileLengths = [:]
@@ -245,17 +274,28 @@ private final class DiskWorker: @unchecked Sendable {
         } catch { Darwin.close(fd); throw error }
     }
     func preflight(_ components: [String]) throws {
+        let path = components.joined(separator: "/")
         var fd = dup(rootFD); guard fd >= 0 else { throw failure("Inspect folder") }; defer { Darwin.close(fd) }
         for component in components.dropLast() {
             let next = openat(fd, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            if next < 0 && errno == ENOENT { return }
+            if next < 0 && errno == ENOENT {
+                if allowedExistingSignatures?[path] != nil { throw TorrentError.storage("Owned file is missing: \(path)") }
+                return
+            }
             guard next >= 0 else { throw failure("Unsafe destination folder") }
             Darwin.close(fd); fd = next
         }
         var info = stat()
         if fstatat(fd, components.last!, &info, AT_SYMLINK_NOFOLLOW) == 0 {
             guard allowExisting, (info.st_mode & S_IFMT) == S_IFREG else { throw TorrentError.storage("Refusing to overwrite existing file: \(components.joined(separator: "/"))") }
+            if let allowedExistingSignatures {
+                guard let expected = allowedExistingSignatures[path], expected.device == UInt64(info.st_dev), expected.inode == info.st_ino else {
+                    throw TorrentError.storage("Existing file is not owned by the original torrent: \(path)")
+                }
+                guard info.st_size == fileLengths[path] else { throw TorrentError.storage("Existing file size does not match torrent: \(path)") }
+            }
         } else if errno != ENOENT { throw failure("Inspect destination file") }
+        else if allowedExistingSignatures?[path] != nil { throw TorrentError.storage("Owned file is missing: \(path)") }
     }
     func checkDestination() throws {
         guard prepared, rootFD >= 0, let rootIdentity else { throw TorrentError.storage("Storage is not prepared") }

@@ -66,6 +66,11 @@ struct TorrentOutlineView: NSViewRepresentable {
             guard model.activeProfile?.id == profileID else { return }
             self.model = model
             guard let outline else { return }
+            if let requested = model.torrentSelectionRequest, model.transfers.contains(where: { $0.id == requested }) {
+                selectedNodeIDs = ["torrent:\(requested)"]
+                model.torrentSelectionRequest = nil
+                generation = -1
+            }
             if model.didLoadUIState && !loadedState {
                 loadedState = true; expanded = Set(model.uiState.expandedNodeIDs); selectedNodeIDs = Set(model.uiState.effectiveSelectedNodeIDs)
                 restoring = true
@@ -270,13 +275,23 @@ struct TorrentOutlineView: NSViewRepresentable {
             }
         }
         func menuNeedsUpdate(_ menu: NSMenu) {
+            updateContextMenu(menu, row: outline?.clickedRow ?? -1)
+        }
+        func updateContextMenu(_ menu: NSMenu, row: Int) {
             menu.removeAllItems()
-            guard canInteract, let outline else { return }
-            guard prepareContextSelection(row: outline.clickedRow) else { return }
+            guard canInteract, outline != nil else { return }
+            guard prepareContextSelection(row: row) else { return }
             for (title, action) in [("Start", #selector(start)), ("Pause", #selector(pause)), ("Recheck", #selector(recheck)), ("Reveal in Finder", #selector(reveal)), ("Remove…", #selector(remove))] {
                 let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
-                item.isEnabled = title == "Reveal in Finder" ? !model.selectedURLs.isEmpty : !model.selectedIDs.isEmpty
+                item.isEnabled = title == "Reveal in Finder" ? !model.selectedURLs.isEmpty : !model.selectedIDs.isEmpty && model.canOperateTransfers
             }
+            menu.insertItem(.separator(), at: 3)
+            for (offset, entry) in [("Refresh Torrent", #selector(refreshTorrent)), ("Edit Refresh Source…", #selector(editRefreshSource))].enumerated() {
+                let item = NSMenuItem(title: entry.0, action: entry.1, keyEquivalent: "")
+                item.target = self; item.isEnabled = model.canRefreshSelection
+                menu.insertItem(item, at: 4 + offset)
+            }
+            menu.insertItem(.separator(), at: 6)
         }
         @discardableResult func prepareContextSelection(row: Int) -> Bool {
             guard canInteract, let outline, row >= 0, row < outline.numberOfRows else { return false }
@@ -288,6 +303,8 @@ struct TorrentOutlineView: NSViewRepresentable {
         @objc func start() { guard canInteract else { return }; model.startSelection() }
         @objc func pause() { guard canInteract else { return }; model.pauseSelection() }
         @objc func recheck() { guard canInteract else { return }; model.recheckSelection() }
+        @objc func refreshTorrent() { guard canInteract else { return }; model.beginRefreshSelection() }
+        @objc func editRefreshSource() { guard canInteract else { return }; model.editRefreshSourceSelection() }
         @objc func reveal() { guard canInteract else { return }; model.revealSelection() }
         @objc func remove() { guard canInteract else { return }; model.confirmRemoval = true }
     }

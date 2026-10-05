@@ -22,13 +22,15 @@ public struct TorrentMetainfo: Sendable, Codable, Equatable {
     public let trackerTiers: [[URL]]
     public let isPrivate: Bool
     public let isMultiFile: Bool
+    public var refreshSource: TorrentRefreshSource?
     public var totalLength: Int64 { files.reduce(0) { $0 + $1.length } }
     public var id: String { infoHash.hexString }
-    public init(infoHash: Data, rawInfo: Data, name: String, pieceLength: Int, pieceHashes: [Data], files: [TorrentFile], trackerTiers: [[URL]], isPrivate: Bool, isMultiFile: Bool) {
-        self.init(infoHash: infoHash, rawInfo: rawInfo, name: name, pieceLength: pieceLength, pieceHashes: PieceHashes(pieceHashes), files: files, trackerTiers: trackerTiers, isPrivate: isPrivate, isMultiFile: isMultiFile)
+    public init(infoHash: Data, rawInfo: Data, name: String, pieceLength: Int, pieceHashes: [Data], files: [TorrentFile], trackerTiers: [[URL]], isPrivate: Bool, isMultiFile: Bool, refreshSource: TorrentRefreshSource? = nil) {
+        self.init(infoHash: infoHash, rawInfo: rawInfo, name: name, pieceLength: pieceLength, pieceHashes: PieceHashes(pieceHashes), files: files, trackerTiers: trackerTiers, isPrivate: isPrivate, isMultiFile: isMultiFile, refreshSource: refreshSource)
     }
-    public init(infoHash: Data, rawInfo: Data, name: String, pieceLength: Int, pieceHashes: PieceHashes, files: [TorrentFile], trackerTiers: [[URL]], isPrivate: Bool, isMultiFile: Bool) {
+    public init(infoHash: Data, rawInfo: Data, name: String, pieceLength: Int, pieceHashes: PieceHashes, files: [TorrentFile], trackerTiers: [[URL]], isPrivate: Bool, isMultiFile: Bool, refreshSource: TorrentRefreshSource? = nil) {
         self.infoHash = infoHash; self.rawInfo = rawInfo; self.name = name; self.pieceLength = pieceLength; self.pieceHashes = pieceHashes; self.files = files; self.trackerTiers = trackerTiers; self.isPrivate = isPrivate; self.isMultiFile = isMultiFile
+        self.refreshSource = refreshSource
     }
     public func lengthOfPiece(_ index: Int) -> Int { Int(min(Int64(pieceLength), totalLength - Int64(index) * Int64(pieceLength))) }
 }
@@ -153,9 +155,11 @@ public struct TransferSnapshot: Sendable, Identifiable, Equatable {
     public var swarm: SwarmCounts
     public var error: String?
     public var trackers: [String]
+    public var refreshSource: TorrentRefreshSource?
     public var progress: Double { selectedBytes > 0 ? min(1, Double(completedBytes) / Double(selectedBytes)) : 0 }
-    public init(id: String, name: String, destination: URL? = nil, isMultiFile: Bool = false, state: TransferState = .queued, files: [FileSnapshot] = [], fileUploadHistoryComplete: Bool = true, completedBytes: Int64 = 0, selectedBytes: Int64 = 0, downloadedBytes: Int64 = 0, uploadedBytes: Int64 = 0, downloadRate: Double = 0, uploadRate: Double = 0, seedRatio: Double? = 1, swarm: SwarmCounts = .init(), error: String? = nil, trackers: [String] = []) {
+    public init(id: String, name: String, destination: URL? = nil, isMultiFile: Bool = false, state: TransferState = .queued, files: [FileSnapshot] = [], fileUploadHistoryComplete: Bool = true, completedBytes: Int64 = 0, selectedBytes: Int64 = 0, downloadedBytes: Int64 = 0, uploadedBytes: Int64 = 0, downloadRate: Double = 0, uploadRate: Double = 0, seedRatio: Double? = 1, swarm: SwarmCounts = .init(), error: String? = nil, trackers: [String] = [], refreshSource: TorrentRefreshSource? = nil) {
         self.id = id; self.name = name; self.destination = destination; self.isMultiFile = isMultiFile; self.state = state; self.files = files; self.fileUploadHistoryComplete = fileUploadHistoryComplete; self.completedBytes = completedBytes; self.selectedBytes = selectedBytes; self.downloadedBytes = downloadedBytes; self.uploadedBytes = uploadedBytes; self.downloadRate = downloadRate; self.uploadRate = uploadRate; self.seedRatio = seedRatio; self.swarm = swarm; self.error = error; self.trackers = trackers
+        self.refreshSource = refreshSource
     }
 }
 

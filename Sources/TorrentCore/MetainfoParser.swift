@@ -16,7 +16,9 @@ public enum MetainfoParser {
         }
         if tiers.isEmpty, let announce = trackerURL(root["announce"]?.stringValue) { tiers = [[announce]] }
         guard let info = root["info"]?.dictionaryValue else { throw invalid("Info must be a dictionary") }
-        return try buildInfo(rawInfo, info: info, trackerTiers: tiers)
+        var metainfo = try buildInfo(rawInfo, info: info, trackerTiers: tiers)
+        metainfo.refreshSource = refreshSource(root["comment.utf-8"]) ?? refreshSource(root["comment"])
+        return metainfo
     }
 
     public static func parseInfo(_ data: Data, trackers: [URL]) throws -> TorrentMetainfo {
@@ -80,6 +82,16 @@ public enum MetainfoParser {
               let host = url.host, !host.isEmpty, url.fragment == nil,
               url.port == nil || (1...65535).contains(url.port!) else { return nil }
         return url
+    }
+    private static func refreshSource(_ value: BencodeValue?) -> TorrentRefreshSource? {
+        guard let data = value?.dataValue, data.count <= 8192,
+              let text = String(data: data, encoding: .utf8),
+              let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
+        for match in detector.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let url = match.url, let source = try? TorrentRefreshSource(url: url) else { continue }
+            if case .ruTracker = source { return source }
+        }
+        return nil
     }
     private static func component(_ value: BencodeValue?, field: String) throws -> String {
         guard let text = value?.stringValue, !text.isEmpty, text != ".", text != "..", text.utf8.count <= 255,

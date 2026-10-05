@@ -99,6 +99,8 @@ extension TorrentEngine {
     }
 
     func checkpoint(cleanShutdown: Bool = false) async throws {
+        await acquireSaveGate()
+        defer { releaseSaveGate() }
         guard libraryError == nil else { throw TorrentError.storage("Unreadable saved state was preserved") }
         for session in sessions.values {
             do {
@@ -266,7 +268,11 @@ extension TorrentEngine {
         session.snapshot.error = message
         session.snapshot.swarm.connectedPeers = 0
         session.snapshot.swarm.connectedSeeds = 0
-        if persist { try? await persistence.saveQuarantine(session.record) }
+        if persist {
+            await acquireSaveGate()
+            try? await persistence.saveQuarantine(session.record)
+            releaseSaveGate()
+        }
         updateActivity()
     }
 

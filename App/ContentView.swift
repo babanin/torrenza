@@ -16,7 +16,8 @@ struct ContentView: View {
                         Text("Open a torrent or magnet link. Your downloads will appear in their folders.")
                     } actions: {
                         Button("Open Torrent…", action: model.openFile)
-                        Button("Open Magnet Link…") { model.showMagnet = true }
+                        Button("Open Torrent URL…", action: model.openTorrentURL)
+                        Button("Open Magnet Link…", action: model.openMagnet)
                         Button("Import from qBittorrent…", action: model.openQBittorrentImport)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -43,7 +44,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .navigationTitle("Torrenza")
 
-            .inspector(isPresented: $model.showInspector) { TransferInspector(model: model).disabled(!model.isProfileReady || model.isSwitchingProfile).inspectorColumnWidth(min: 260, ideal: 320, max: 460) }
+            .inspector(isPresented: $model.showInspector) { TransferInspector(model: model).disabled(!model.canOperateTransfers).inspectorColumnWidth(min: 260, ideal: 320, max: 460) }
         }
         .overlay {
             if model.isSwitchingProfile {
@@ -76,22 +77,23 @@ struct ContentView: View {
             ToolbarItem(id: "add-transfer", placement: .primaryAction) {
                 Menu {
                     Button("Open Torrent…", action: model.openFile)
-                    Button("Open Magnet Link…") { model.showMagnet = true }
+                    Button("Open Torrent URL…", action: model.openTorrentURL).disabled(!model.canOpenTorrentURL)
+                    Button("Open Magnet Link…", action: model.openMagnet).disabled(!model.canOpenTorrentURL)
                     Divider()
                     Button("Import from qBittorrent…", action: model.openQBittorrentImport)
                         .disabled(!model.canImportFromQBittorrent)
                 } label: { Label("Add Torrent", systemImage: "plus") }
                 .help("Add a torrent or magnet link")
-                .disabled(!model.isProfileReady || model.isSwitchingProfile || model.qbittorrentImport != nil)
+                .disabled(!model.canOpenTorrentURL)
             }
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItemGroup(placement: .primaryAction) {
                 Button(action: model.startSelection) { Label("Start", systemImage: "play") }
                     .help("Start selected transfers")
-                    .disabled(model.selectedIDs.isEmpty || !model.isProfileReady || model.isSwitchingProfile)
+                    .disabled(model.selectedIDs.isEmpty || !model.canOperateTransfers)
                 Button(action: model.pauseSelection) { Label("Pause", systemImage: "pause") }
                     .help("Pause selected transfers")
-                    .disabled(model.selectedIDs.isEmpty || !model.isProfileReady || model.isSwitchingProfile)
+                    .disabled(model.selectedIDs.isEmpty || !model.canOperateTransfers)
             }
             ToolbarItem(id: "transfer-search", placement: .primaryAction) {
                 ToolbarSearchField(text: $model.search, focusRequest: model.searchFocusRequest)
@@ -113,6 +115,8 @@ struct ContentView: View {
         .sheet(item: $model.qbittorrentImport, onDismiss: model.qbittorrentImportDismissed) { draft in QBittorrentImportView(model: model, draft: draft) }
         .sheet(isPresented: $model.showMagnet) { magnetSheet }
         .sheet(isPresented: $model.confirmRemoval) { removalSheet }
+        .sheet(item: $model.refreshSourceEditor, onDismiss: model.refreshSourceEditorDismissed) { draft in TorrentRefreshSourceView(model: model, draft: draft) }
+        .sheet(item: $model.refreshOperation, onDismiss: model.refreshOperationDismissed) { operation in TorrentRefreshProgressView(model: model, operation: operation) }
         .alert("Torrenza", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("OK") { model.error = nil } } message: { Text(model.error ?? "") }
     }
     private var toolbarFilters: some View {
@@ -251,6 +255,7 @@ struct AddTorrentView: View {
                 Text("No files selected. This torrent will be added paused.").font(.caption).foregroundStyle(.secondary)
             }
             Form {
+                TextField("Refresh source URL (optional)", text: $draft.sourceText).textFieldStyle(.roundedBorder)
                 Toggle("Seed without a ratio limit", isOn: $draft.unlimitedSeed)
                 if !draft.unlimitedSeed { HStack { Text("Stop seeding at ratio"); TextField("Ratio", value: $draft.ratio, format: .number).frame(width: 70) } }
                 Toggle("Verify and reuse existing files", isOn: $draft.allowExisting)
@@ -354,6 +359,10 @@ struct SettingsView: View {
                     LabeledContent("Lifetime uploaded", value: byteString(stats.lifetimeUploadedBytes))
                     Text("Current session started \(stats.current.startedAt.formatted(date: .abbreviated, time: .shortened)).").font(.caption).foregroundStyle(.secondary)
                 }
+            }
+            Section("RuTracker") {
+                Button("Sign Out of RuTracker", action: model.signOutOfRuTracker).disabled(!model.canOpenTorrentURL)
+                Text("Sign in inside Torrenza when a torrent refresh requires it. Each profile keeps its own session.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Library") {
                 LabeledContent("Profile") {

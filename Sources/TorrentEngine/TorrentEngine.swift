@@ -72,7 +72,7 @@ final class EngineSession {
         self.record = record
         fileSnapshotIndices = Dictionary(uniqueKeysWithValues: record.metainfo.files.filter { !$0.isPadding }.enumerated().map { ($0.element.index, $0.offset) })
         wanted = Self.wantedPieces(record)
-        snapshot = TransferSnapshot(id: record.metainfo.id, name: record.metainfo.name, destination: record.destination, isMultiFile: record.metainfo.isMultiFile, state: record.wantedRunning ? .queued : .paused, files: record.metainfo.files.filter { !$0.isPadding }.map { FileSnapshot(file: $0, selected: record.selectedFiles.contains($0.index), uploadedBytes: record.fileUploadedBytes?[$0.index] ?? 0) }, fileUploadHistoryComplete: record.fileUploadHistoryComplete ?? false, selectedBytes: record.metainfo.files.filter { record.selectedFiles.contains($0.index) }.reduce(0) { $0 + $1.length }, downloadedBytes: record.downloaded, uploadedBytes: record.uploaded, seedRatio: record.seedRatio, trackers: record.metainfo.trackerTiers.flatMap { $0 }.map(\.absoluteString))
+        snapshot = TransferSnapshot(id: record.metainfo.id, name: record.metainfo.name, destination: record.destination, isMultiFile: record.metainfo.isMultiFile, state: record.wantedRunning ? .queued : .paused, files: record.metainfo.files.filter { !$0.isPadding }.map { FileSnapshot(file: $0, selected: record.selectedFiles.contains($0.index), uploadedBytes: record.fileUploadedBytes?[$0.index] ?? 0) }, fileUploadHistoryComplete: record.fileUploadHistoryComplete ?? false, selectedBytes: record.metainfo.files.filter { record.selectedFiles.contains($0.index) }.reduce(0) { $0 + $1.length }, downloadedBytes: record.downloaded, uploadedBytes: record.uploaded, seedRatio: record.seedRatio, trackers: record.metainfo.trackerTiers.flatMap { $0 }.map(\.absoluteString), refreshSource: record.refreshSource ?? record.metainfo.refreshSource)
         if let error = record.quarantineError {
             snapshot.state = .failed
             snapshot.error = error
@@ -153,6 +153,11 @@ public actor TorrentEngine {
     var activating = false
     var backgroundTasks: [UUID: Task<Void, Never>] = [:]
     var resolutionTasks: [UUID: Task<TorrentMetainfo, Error>] = [:]
+    var refreshingIDs: Set<String> = []
+    var sessionOperationCounts: [String: Int] = [:]
+    var refreshWaiters: [CheckedContinuation<Void, Never>] = []
+    var saveGateHeld = false
+    var saveGateWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(stateDirectory: URL? = nil) {
         let directory = stateDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Torrenza", isDirectory: true)
@@ -214,6 +219,7 @@ public actor TorrentEngine {
     /// depend on unselected payload are cleared because foreign partfiles are not reused.
     public func add(metainfo: TorrentMetainfo, destination: URL, selectedFiles: Set<Int>, seedRatio: Double? = 1, allowExisting: Bool = false, startPaused: Bool = false, downloadedBytes: Int64 = 0, uploadedBytes: Int64 = 0, savedVerifiedPieces: PieceBitset? = nil) async throws -> String {
         guard !shuttingDown else { throw CancellationError() }
+        guard refreshingIDs.isEmpty else { throw TorrentError.storage("Wait for the current torrent refresh to finish") }
         guard libraryError == nil else { throw TorrentError.storage("Saved transfers could not be read; repair or move the saved state before adding transfers") }
         guard downloadedBytes >= 0, uploadedBytes >= 0 else { throw TorrentError.invalidMetainfo("Transfer history cannot contain negative byte counts") }
         try Self.validateMetainfo(metainfo)
@@ -283,8 +289,10 @@ public actor TorrentEngine {
     }
 
     public func start(_ id: String) async {
-        guard !shuttingDown else { return }
+        guard !shuttingDown, !refreshingIDs.contains(id) else { return }
         guard let session = sessions[id] else { return }
+        sessionOperationCounts[id, default: 0] += 1
+        defer { finishSessionOperation(id) }
         guard !session.record.selectedFiles.isEmpty else {
             await pause(id)
             return
@@ -299,8 +307,10 @@ public actor TorrentEngine {
     }
 
     public func pause(_ id: String) async {
-        guard !shuttingDown else { return }
+        guard !shuttingDown, !refreshingIDs.contains(id) else { return }
         guard let session = sessions[id] else { return }
+        sessionOperationCounts[id, default: 0] += 1
+        defer { finishSessionOperation(id) }
         session.record.wantedRunning = false
         await stopSession(id, state: session.record.quarantineError == nil ? .paused : .failed)
         try? await checkpoint()
@@ -309,7 +319,10 @@ public actor TorrentEngine {
 
     public func remove(_ id: String, deleteFiles: Bool = false) async throws {
         guard !shuttingDown else { throw CancellationError() }
+        guard !refreshingIDs.contains(id) else { throw TorrentError.storage("Wait for this torrent refresh to finish") }
         guard let session = sessions[id] else { return }
+        sessionOperationCounts[id, default: 0] += 1
+        defer { finishSessionOperation(id) }
         session.record.wantedRunning = false
         await stopSession(id, state: .paused)
         if deleteFiles {
@@ -330,8 +343,10 @@ public actor TorrentEngine {
     }
 
     public func recheck(_ id: String) async {
-        guard !shuttingDown else { return }
+        guard !shuttingDown, !refreshingIDs.contains(id) else { return }
         guard let session = sessions[id] else { return }
+        sessionOperationCounts[id, default: 0] += 1
+        defer { finishSessionOperation(id) }
         session.record.quarantineError = nil
         session.snapshot.error = nil
         guard !session.record.selectedFiles.isEmpty else {
@@ -346,8 +361,10 @@ public actor TorrentEngine {
     }
 
     public func setSeedRatio(_ id: String, ratio: Double?) async {
-        guard !shuttingDown else { return }
+        guard !shuttingDown, !refreshingIDs.contains(id) else { return }
         guard let session = sessions[id], ratio == nil || (ratio!.isFinite && ratio! >= 0) else { return }
+        sessionOperationCounts[id, default: 0] += 1
+        defer { finishSessionOperation(id) }
         session.record.seedRatio = ratio; session.snapshot.seedRatio = ratio
         await schedule()
         try? await checkpoint()
@@ -355,7 +372,10 @@ public actor TorrentEngine {
 
     public func setSelectedFiles(_ id: String, selectedFiles: Set<Int>) async throws {
         guard !shuttingDown else { throw CancellationError() }
+        guard !refreshingIDs.contains(id) else { throw TorrentError.storage("Wait for this torrent refresh to finish") }
         guard let session = sessions[id] else { return }
+        sessionOperationCounts[id, default: 0] += 1
+        defer { finishSessionOperation(id) }
         let valid = Set(session.record.metainfo.files.filter { !$0.isPadding }.map(\.index))
         guard selectedFiles.isSubset(of: valid) else { throw TorrentError.storage("Invalid file selection") }
         for file in session.record.metainfo.files where selectedFiles.contains(file.index) && !session.record.selectedFiles.contains(file.index) {
@@ -582,6 +602,7 @@ public actor TorrentEngine {
             for task in tasks { await task.value }
         }
         await oldTicker?.value
+        if !refreshingIDs.isEmpty { await withCheckedContinuation { refreshWaiters.append($0) } }
         publishSnapshots()
     }
 

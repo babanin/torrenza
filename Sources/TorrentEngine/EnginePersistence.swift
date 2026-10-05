@@ -19,6 +19,7 @@ struct EngineRecord: Codable, Sendable {
     var wantedRunning: Bool
     var quarantineError: String? = nil
     var verified: PieceBitset
+    var refreshSource: TorrentRefreshSource? = nil
 }
 
 extension EngineRecord {
@@ -81,15 +82,17 @@ private struct MutableTransferRecord: Codable, Sendable {
     var wantedRunning: Bool
     var quarantineError: String? = nil
     var verified: PieceBitset
+    var refreshSource: TorrentRefreshSource?
     init(_ record: EngineRecord) {
         destination = record.destination; bookmark = record.bookmark; volumeUUID = record.volumeUUID
         diskSignatures = nil; ownedSignatures = nil; selectedFiles = record.selectedFiles; seedRatio = record.seedRatio
         downloaded = record.downloaded; uploaded = record.uploaded
         fileUploadedBytes = record.fileUploadedBytes; fileUploadHistoryComplete = record.fileUploadHistoryComplete
         wantedRunning = record.wantedRunning; quarantineError = record.quarantineError; verified = record.verified
+        refreshSource = record.refreshSource
     }
     func record(metainfo: TorrentMetainfo) -> EngineRecord {
-        EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, volumeUUID: volumeUUID, diskSignatures: diskSignatures, ownedSignatures: ownedSignatures, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloaded, uploaded: uploaded, fileUploadedBytes: fileUploadedBytes, fileUploadHistoryComplete: fileUploadHistoryComplete, wantedRunning: wantedRunning, quarantineError: quarantineError, verified: verified)
+        EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, volumeUUID: volumeUUID, diskSignatures: diskSignatures, ownedSignatures: ownedSignatures, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloaded, uploaded: uploaded, fileUploadedBytes: fileUploadedBytes, fileUploadHistoryComplete: fileUploadHistoryComplete, wantedRunning: wantedRunning, quarantineError: quarantineError, verified: verified, refreshSource: refreshSource)
     }
 }
 
@@ -214,6 +217,31 @@ actor EnginePersistence {
         let value = try encoder.encode(MutableTransferRecord(record))
         try await store.write([SQLiteEntry(namespace: "transfers", key: id, value: value)])
         savedTransfers[id] = value
+    }
+
+    /// Commits a refresh without exposing an intermediate removed transfer or
+    /// rewriting another torrent's checkpoint. Called under the engine save gate.
+    func replaceTransfer(_ oldID: String, with record: EngineRecord) async throws {
+        guard savedMetadata.contains(oldID) else { throw TorrentError.storage("The original torrent is no longer saved") }
+        let id = record.metainfo.id
+        guard id == oldID || !savedMetadata.contains(id) else { throw TorrentError.storage("The refreshed torrent is already in your library") }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let transfer = try encoder.encode(MutableTransferRecord(record))
+        let signatures = try record.diskSignatures.map { try encoder.encode($0) }
+        var entries = [SQLiteEntry(namespace: "metainfo", key: id, value: try encoder.encode(record.metainfo)),
+                       SQLiteEntry(namespace: "transfers", key: id, value: transfer),
+                       SQLiteEntry(namespace: "signatures", key: id, value: signatures),
+                       SQLiteEntry(namespace: "ownership", key: id, value: try record.ownedSignatures.map { try encoder.encode($0) })]
+        if id != oldID {
+            for namespace in ["metainfo", "transfers", "signatures", "ownership"] {
+                entries.append(SQLiteEntry(namespace: namespace, key: oldID, value: nil))
+            }
+        }
+        try await store.write(entries)
+        savedMetadata.remove(oldID); savedMetadata.insert(id)
+        savedTransfers.removeValue(forKey: oldID); savedTransfers[id] = transfer
+        savedSignatures.removeValue(forKey: oldID); savedSignatures[id] = signatures
+        savedOwnership.removeValue(forKey: oldID); savedOwnership[id] = record.ownedSignatures
     }
 
     func validateStatistics() async throws {
