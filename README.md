@@ -58,7 +58,11 @@ Torrenza advertises a qBittorrent 5.1.0 compatibility identity in its peer ID, e
 
 ## Resource design
 
-Defaults are two active downloads, two seeds, 60 peer connections overall, and a shared 32 MiB payload budget. Default seeding stops at ratio 1.0; unlimited seeding and other limits are available per torrent. HDD/unknown-device scheduling is conservative; an explicit SSD profile permits the normal two-download concurrency on a volume.
+Defaults are two active downloads, two seeds, 60 peer connections overall, eight outstanding download requests per peer, and a shared 32 MiB payload budget. Default seeding stops at ratio 1.0; unlimited seeding and other limits are available per torrent. HDD/unknown-device scheduling is conservative; an explicit SSD profile permits the normal two-download concurrency on a volume.
+
+Choose **Settings → Transfers → Download preset → High throughput** to raise the ceilings to **1,000 connections, 128 requests per peer, and 256 MiB**. Existing profiles retain their settings until selected. Presets preserve bandwidth limits, active transfer counts, storage profiles, and energy protections. Individual resource ceilings are adjustable; remote `reqq`, available memory, and verification backpressure can reduce actual request depth or connection count. The budget includes 1 MiB reserved for verification and covers engine reservations, not total app memory.
+
+The picker favors finishing open pieces and keeps HDD writes local; files in a multi-file torrent need not advance evenly. At most 16 pieces are open at once to bound verification backlog, so tiny pieces can also limit request depth. Public DHT and trackers discover peers concurrently; private torrents remain tracker-only. See the [controlled throughput benchmark](docs/throughput-benchmark.md) for measured results and reproducible fixtures.
 
 The engine uses bounded block pipelines, streamed SHA-1 verification through CryptoKit, direct destination writes, virtual padding, and compact sidecars for skipped-file boundaries. Startup optimistically restores saved piece progress without reading or hashing downloaded content, including after an interrupted session. Use **Recheck** to verify existing content explicitly. A torrent that encounters a storage error stops and retains its error across launches; after fixing the problem, choose **Resume** or **Recheck** to retry. Other torrents can continue. Security-scoped bookmarks retain user-selected folder access.
 

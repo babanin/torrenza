@@ -6,6 +6,8 @@ public struct ExtensionHandshake: Sendable, Equatable {
     public let metadataID: UInt8?
     public let pexID: UInt8?
     public let metadataSize: Int?
+    /// A missing or invalid BEP 10 request queue leaves the local limit unchanged.
+    public let requestQueueLimit: Int?
 }
 
 public struct MetadataMessage: Sendable, Equatable {
@@ -39,7 +41,8 @@ public enum PeerExtensions {
             guard let number = value.intValue, (1...Int64(maxMetadataSize)).contains(number) else { throw TorrentError.invalidMessage("Metadata exceeds size limit") }
             size = Int(number)
         }
-        return try ExtensionHandshake(metadataID: identifier("ut_metadata"), pexID: identifier("ut_pex"), metadataSize: size)
+        let queue = values["reqq"]?.intValue.flatMap { $0 > 0 && $0 <= Int64(Int.max) ? Int($0) : nil }
+        return try ExtensionHandshake(metadataID: identifier("ut_metadata"), pexID: identifier("ut_pex"), metadataSize: size, requestQueueLimit: queue)
     }
     public static func metadataRequest(piece: Int) -> Data { metadataHeader(type: 0, piece: piece) }
     public static func metadataReject(piece: Int) -> Data { metadataHeader(type: 2, piece: piece) }

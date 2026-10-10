@@ -337,9 +337,16 @@ struct SettingsView: View {
                 }.pickerStyle(.segmented)
             }.disabled(!model.isProfileReady || model.isSwitchingProfile)
             Section("Transfers") {
+                Picker("Download preset", selection: Binding(get: { model.settings.throughputPreset }, set: { if let preset = $0 { model.settings.apply(preset) } })) {
+                    Text("Custom").tag(Optional<ThroughputPreset>.none)
+                    ForEach(ThroughputPreset.allCases, id: \.self) { preset in Text(preset.title).tag(Optional(preset)) }
+                }
                 Stepper("Active downloads: \(model.settings.maxDownloads)", value: $model.settings.maxDownloads, in: 1...8)
                 Stepper("Active seeds: \(model.settings.maxSeeds)", value: $model.settings.maxSeeds, in: 0...8)
-                Stepper("Maximum peers: \(model.settings.maxPeers)", value: $model.settings.maxPeers, in: 5...200, step: 5)
+                Stepper("Maximum peers: \(model.settings.maxPeers)", value: $model.settings.maxPeers, in: EngineSettings.peerRange)
+                Stepper("Requests per peer: \(model.settings.downloadRequestWindow)", value: $model.settings.downloadRequestWindow, in: EngineSettings.downloadRequestWindowRange)
+                Stepper("Payload budget: \(model.settings.payloadBudget / (1024 * 1024)) MiB", value: Binding(get: { model.settings.payloadBudget / (1024 * 1024) }, set: { model.settings.payloadBudget = $0 * 1024 * 1024 }), in: 32...256)
+                Text("High throughput uses up to 1,000 peers, 128 requests per peer and a 256 MiB engine payload budget. Total app memory can be higher.").font(.caption).foregroundStyle(.secondary)
                 HStack { Text("Download limit (KiB/s)"); Spacer(); TextField("Unlimited", value: Binding(get: { model.settings.downloadLimit / 1024 }, set: { model.settings.downloadLimit = max(0, min($0, 1_000_000)) * 1024 }), format: .number).frame(width: 90) }
                 HStack { Text("Upload limit (KiB/s)"); Spacer(); TextField("Unlimited", value: Binding(get: { model.settings.uploadLimit / 1024 }, set: { model.settings.uploadLimit = max(0, min($0, 1_000_000)) * 1024 }), format: .number).frame(width: 90) }
                 Text("A limit of 0 means unlimited.").font(.caption).foregroundStyle(.secondary)

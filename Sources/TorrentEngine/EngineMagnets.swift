@@ -42,13 +42,12 @@ extension TorrentEngine {
         endpoints.append(contentsOf: discovered)
         endpoints = Array(Set(endpoints)).prefix(60).map { $0 }
         guard !endpoints.isEmpty else { throw TorrentError.network("No peers found for this magnet. Try again when peers are available, or open its .torrent file.") }
-        let identity = peerID, budget = budget
         let result = try await withThrowingTaskGroup(of: Result<TorrentMetainfo, TorrentError>.self) { group in
             var iterator = endpoints.makeIterator()
             for _ in 0..<min(4, endpoints.count) {
                 if let endpoint = iterator.next() {
                     group.addTask {
-                        do { return .success(try await Self.metadata(from: endpoint, link: link, peerID: identity, budget: budget)) }
+                        do { return .success(try await self.metadata(from: endpoint, link: link)) }
                         catch { return .failure(.network(error.localizedDescription)) }
                     }
                 }
@@ -62,7 +61,7 @@ extension TorrentEngine {
                 try Task.checkCancellation()
                 if let endpoint = iterator.next() {
                     group.addTask {
-                        do { return .success(try await Self.metadata(from: endpoint, link: link, peerID: identity, budget: budget)) }
+                        do { return .success(try await self.metadata(from: endpoint, link: link)) }
                         catch { return .failure(.network(error.localizedDescription)) }
                     }
                 }
@@ -71,6 +70,44 @@ extension TorrentEngine {
         }
         if result.isPrivate { throw TorrentError.unsupported("This is a private torrent. Open its .torrent file to use tracker-only discovery.") }
         return result
+    }
+
+    /// Metadata sockets retain the same global slot for their entire lifetime.
+    /// A known hash without a session generation distinguishes them from both
+    /// unknown incoming sockets and ordinary transfer handshakes.
+    func reserveMetadataConnection(infoHash: Data) -> UUID? {
+        let id = infoHash.hexString
+        guard !shuttingDown, !Task.isCancelled, totalPeers < effectivePeerLimit,
+              connectionAdmissions.count < 64, handshakes(for: id) < 16 else { return nil }
+        let token = UUID()
+        connectionAdmissions[token] = ConnectionAdmission(sessionID: id)
+        return token
+    }
+
+    func metadata(from endpoint: PeerEndpoint, link: MagnetLink) async throws -> TorrentMetainfo {
+        try Task.checkCancellation()
+        guard let admission = reserveMetadataConnection(infoHash: link.infoHash) else {
+            throw TorrentError.network("Metadata resolution is waiting for connection capacity; pause a transfer and retry")
+        }
+        let identity = peerID, budget = budget
+        let worker = Task { try await Self.metadata(from: endpoint, link: link, peerID: identity, budget: budget) }
+        // Rebalancing holds a Void task handle. Forward its cancellation to the
+        // result-bearing worker so settings reductions can retire metadata too.
+        let cancellation = Task {
+            await withTaskCancellationHandler {
+                _ = try? await worker.value
+            } onCancel: { worker.cancel() }
+        }
+        connectionAdmissions[admission]?.task = cancellation
+        defer {
+            cancellation.cancel()
+            connectionAdmissions.removeValue(forKey: admission)
+        }
+        return try await withTaskCancellationHandler {
+            let result = try await worker.value
+            try Task.checkCancellation()
+            return result
+        } onCancel: { worker.cancel() }
     }
 
     nonisolated static func metadata(from endpoint: PeerEndpoint, link: MagnetLink, peerID: Data, budget: ResourceBudget) async throws -> TorrentMetainfo {

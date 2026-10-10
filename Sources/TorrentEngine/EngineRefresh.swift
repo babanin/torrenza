@@ -139,12 +139,9 @@ extension TorrentEngine {
                 next.record.verified = plan.verified
                 for index in plan.check {
                     try validateRefresh(original, id: id, generation: generation)
-                    try await budget.acquire(65_536)
-                    do {
-                        let valid = try await disk.verifyPiece(index)
-                        await budget.release(65_536)
-                        next.record.verified[index] = valid
-                    } catch { await budget.release(65_536); throw error }
+                    let valid = try await verifyPiece(disk, index: index)
+                    try validateRefresh(original, id: id, generation: generation)
+                    next.record.verified[index] = valid
                 }
                 try await disk.flush()
             }

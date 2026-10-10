@@ -779,7 +779,19 @@ import TorrentStorage
             appearance = .system
             check(NSApp.appearance == nil, "System theme follows macOS")
 
-            let hostingView = NSHostingView(rootView: SettingsView(model: self))
+            // A separate model keeps preset smoke checks away from the real
+            // profile, including any SettingsView onChange persistence.
+            let settingsModel = AppModel(root: directory.appendingPathComponent("Settings-Fixture-\(UUID())", isDirectory: true), defaults: profileDefaults)
+            settingsModel.isProfileReady = true
+            settingsModel.isSwitchingProfile = false
+            settingsModel.activeProfile = activeProfile
+            settingsModel.profiles = profiles
+            settingsModel.statistics = statistics
+            settingsModel.settings = settings
+            settingsModel.settings.apply(.highThroughput)
+            check(settingsModel.settings.throughputPreset == .highThroughput && settingsModel.settings.maxPeers == 1_000 && settingsModel.settings.downloadRequestWindow == 128 && settingsModel.settings.payloadBudget == 256 * 1024 * 1024, "High throughput preset supplies the Settings controls with 1,000 peers, 128 requests and 256 MiB")
+            check(settingsModel.settings.maxDownloads == settings.maxDownloads && settingsModel.settings.maxSeeds == settings.maxSeeds && settingsModel.settings.downloadLimit == settings.downloadLimit && settingsModel.settings.uploadLimit == settings.uploadLimit && settingsModel.settings.storageProfile == settings.storageProfile, "Preset retains active-transfer, bandwidth and storage preferences")
+            let hostingView = NSHostingView(rootView: SettingsView(model: settingsModel))
             let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 490, height: 620), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             settingsWindow.title = "Settings — Appearance Fixture"
             settingsWindow.isReleasedWhenClosed = false
@@ -788,7 +800,7 @@ import TorrentStorage
             settingsWindow.makeKeyAndOrderFront(nil)
             defer { settingsWindow.close() }
             for theme in [AppAppearance.light, .dark] {
-                appearance = theme
+                settingsModel.appearance = theme
                 let expectedName: NSAppearance.Name = theme == .dark ? .darkAqua : .aqua
                 check(NSApp.appearance?.name == expectedName, "\(theme.title) selection updates application appearance")
                 try await Task.sleep(for: .milliseconds(500))

@@ -50,14 +50,9 @@ extension TorrentEngine {
 
     func tick() async {
         guard !shuttingDown else { return }
-        let activeCount = max(1, sessions.values.filter { [.downloading, .seeding].contains($0.snapshot.state) }.count)
-        let fairPeerLimit = max(1, effectivePeerLimit / activeCount)
+        await rebalanceConnections()
         for id in Array(sessions.keys) {
             guard let session = sessions[id] else { continue }
-            while session.peers.count > fairPeerLimit || (totalPeers > effectivePeerLimit && !session.peers.isEmpty) {
-                guard let oldest = session.peers.min(by: { $0.value.lastMessage < $1.value.lastMessage })?.key else { break }
-                await disconnect(id, key: oldest)
-            }
             let now = Date(), elapsed = now.timeIntervalSince(session.lastRate)
             if elapsed >= 0.5 {
                 session.snapshot.downloadRate = Double(session.record.downloaded - session.previousDownloaded) / elapsed
@@ -68,7 +63,7 @@ extension TorrentEngine {
             session.snapshot.downloadedBytes = session.record.downloaded
             session.snapshot.uploadedBytes = session.record.uploaded
             session.snapshot.swarm.connectedPeers = session.peers.count
-            session.snapshot.swarm.connectedSeeds = session.peers.values.filter { $0.availability.isComplete }.count
+            session.snapshot.swarm.connectedSeeds = session.picker.seedCount
             if [.downloading, .seeding].contains(session.snapshot.state) {
                 if session.selectedComplete && session.ratioReached { await stopSession(id, state: .completed); continue }
                 if now >= session.nextAnnounce && !session.discoveryInProgress {
@@ -156,13 +151,9 @@ extension TorrentEngine {
             for index in 0..<session.wanted.count where session.wanted[index] {
                 guard session.generation == generation, sessions[id] != nil else { return }
                 try Task.checkCancellation()
-                try await budget.acquire(65_536)
-                do {
-                    let valid = try await disk.verifyPiece(index)
-                    await budget.release(65_536)
-                    guard session.generation == generation, session.record.quarantineError == nil else { return }
-                    session.record.verified[index] = valid
-                } catch { await budget.release(65_536); throw error }
+                let valid = try await verifyPiece(disk, index: index)
+                guard session.generation == generation, session.record.quarantineError == nil else { return }
+                session.record.verified[index] = valid
             }
             await refreshProgress(session)
         } catch is CancellationError { /* An explicit pause or shutdown cancels checking. */ }
@@ -234,11 +225,19 @@ extension TorrentEngine {
         guard let session = sessions[id] else { return }
         session.snapshot.state = state
         session.generation += 1
+        session.discoveryInProgress = false
+        session.discoveryGeneration = nil
+        let verificationTask = session.verificationTask
+        verificationTask?.cancel()
+        session.verificationTask = nil
+        session.verificationWorkerID = nil
+        session.verificationQueue.removeAll()
         session.task?.cancel(); session.task = nil
         for task in session.connectionTasks.values { task.cancel() }
         session.connectionTasks.removeAll()
         for key in Array(session.peers.keys) { await disconnect(id, key: key) }
-        session.pieceWork.removeAll()
+        await verificationTask?.value
+        session.clearPieceWork()
         session.candidates.removeAll(); session.knownEndpoints.removeAll(); session.lastAttempt.removeAll()
         session.snapshot.downloadRate = 0; session.snapshot.uploadRate = 0
         if session.startedAnnounced {
@@ -305,8 +304,8 @@ extension TorrentEngine {
         throw TorrentError.network("Could not start the incoming peer listener")
     }
     func enqueueIncoming(_ connection: NWConnection) {
-        guard !shuttingDown else { connection.cancel(); return }
-        startBackgroundTask { engine in await engine.accept(connection) }
+        guard let admission = reserveConnection(for: nil) else { connection.cancel(); return }
+        connectionAdmissions[admission]?.task = startBackgroundTask { engine in await engine.accept(connection, admission: admission) }
     }
     func setListeningPort(_ port: UInt16) { if !shuttingDown { listeningPort = port } }
 
@@ -315,6 +314,9 @@ extension TorrentEngine {
         if let dht { return dht }
         let contacts = try await persistence.loadDHTContacts()
         guard !shuttingDown else { throw CancellationError() }
+        // Another torrent may have initialized the shared node while storage
+        // was loading its contacts.
+        if let dht { return dht }
         let client = DHTClient(bootstrapNodes: configuration.bootstrapNodes, persistedContacts: contacts)
         dht = client
         try await client.start()
@@ -322,19 +324,64 @@ extension TorrentEngine {
     }
 
     func discover(_ id: String) async {
-        guard let session = sessions[id] else { return }
-        defer { session.discoveryInProgress = false }
-        await announce(id, event: session.startedAnnounced ? .none : .started)
-        guard !shuttingDown, !Task.isCancelled else { return }
-        if !session.record.metainfo.isPrivate {
-            do {
-                let client = try await ensureDHT()
-                let endpoints = try await client.peers(infoHash: session.record.metainfo.infoHash)
-                addCandidates(id, endpoints)
-                await client.announce(infoHash: session.record.metainfo.infoHash, port: listeningPort)
-            } catch { if session.record.quarantineError == nil && session.candidates.isEmpty && session.peers.isEmpty { session.snapshot.error = error.localizedDescription } }
+        guard let session = sessions[id], !shuttingDown, !Task.isCancelled,
+              [.downloading, .seeding].contains(session.snapshot.state) else { return }
+        let identity = ObjectIdentifier(session), generation = session.generation
+        session.discoveryGeneration = generation
+        defer {
+            if sessions[id] === session, session.discoveryGeneration == generation {
+                session.discoveryInProgress = false
+                session.discoveryGeneration = nil
+            }
         }
+        let event: TrackerEvent = session.startedAnnounced ? .none : .started
+        let isPrivate = session.record.metainfo.isPrivate
+        // Keep tracker failover/interval policy, but let public discovery and
+        // candidate admission proceed while a tracker is waiting on the network.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.announce(id, event: event) }
+            if !isPrivate {
+                group.addTask { await self.discoverDHT(id, identity: identity, generation: generation) }
+            }
+        }
+    }
+
+    private func discoverDHT(_ id: String, identity: ObjectIdentifier, generation: Int) async {
+        guard let session = sessions[id], ObjectIdentifier(session) == identity,
+              session.generation == generation, !shuttingDown, !Task.isCancelled else { return }
+        do {
+            let client = try await ensureDHT()
+            guard session.generation == generation, !shuttingDown, !Task.isCancelled else { return }
+            _ = try await client.peers(infoHash: session.record.metainfo.infoHash) { endpoints in
+                await self.admitDiscoveredCandidates(id, identity: identity, generation: generation, endpoints: endpoints)
+            }
+            guard sessions[id] === session, session.generation == generation,
+                  !shuttingDown, !Task.isCancelled else { return }
+            await client.announce(infoHash: session.record.metainfo.infoHash, port: listeningPort)
+        } catch {
+            if sessions[id] === session, session.generation == generation, !Task.isCancelled,
+               session.record.quarantineError == nil, session.candidates.isEmpty, session.peers.isEmpty {
+                session.snapshot.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func admitDiscoveredCandidates(_ id: String, identity: ObjectIdentifier, generation: Int, endpoints: [PeerEndpoint]) {
+        guard let session = sessions[id], ObjectIdentifier(session) == identity,
+              session.generation == generation, !shuttingDown, !Task.isCancelled,
+              session.record.quarantineError == nil,
+              [.downloading, .seeding].contains(session.snapshot.state) else { return }
+        addCandidates(id, endpoints)
         connectCandidates(id)
+    }
+
+    func trackerPeerRequestCount(for id: String) -> Int {
+        let active = max(1, sessions.values.filter { [.downloading, .seeding].contains($0.snapshot.state) }.count)
+        let fairShare = (effectivePeerLimit + active - 1) / active
+        let held = (sessions[id]?.peers.count ?? 0) + handshakes(for: id)
+        // A torrent below its fair share needs candidates even when another
+        // torrent has borrowed the currently free connection capacity.
+        return min(200, max(0, effectivePeerLimit - totalPeers, fairShare - held))
     }
 
     func announce(_ id: String, event: TrackerEvent) async {
@@ -342,22 +389,34 @@ extension TorrentEngine {
         let meta = session.record.metainfo
         let generation = session.generation
         let verified = (0..<meta.pieceHashes.count).filter { session.record.verified[$0] }.reduce(Int64(0)) { $0 + Int64(meta.lengthOfPiece($1)) }
-        let request = TrackerRequest(infoHash: meta.infoHash, peerID: peerID, port: listeningPort, uploaded: session.record.uploaded, downloaded: session.record.downloaded, left: max(0, meta.totalLength - verified), event: event, numWant: 50)
+        let request = TrackerRequest(infoHash: meta.infoHash, peerID: peerID, port: listeningPort, uploaded: session.record.uploaded, downloaded: session.record.downloaded, left: max(0, meta.totalLength - verified), event: event, numWant: event == .stopped ? 0 : trackerPeerRequestCount(for: id))
         let client = TrackerClient()
         for url in meta.trackerTiers.flatMap({ $0 }) {
-            guard !shuttingDown, !Task.isCancelled else { return }
+            guard !shuttingDown, !Task.isCancelled, sessions[id] === session,
+                  event == .stopped || session.generation == generation else { return }
             if session.snapshot.swarm.tracker != url.absoluteString {
                 session.snapshot.swarm.reportedSeeds = nil; session.snapshot.swarm.reportedPeers = nil; session.snapshot.swarm.reportedAt = nil
             }
             do {
                 let response = try await client.announce(url: url, request: request)
-                guard event == .stopped || session.generation == generation else { return }
+                guard !shuttingDown, !Task.isCancelled, sessions[id] === session,
+                      event == .stopped || session.generation == generation else { return }
                 if event == .stopped { return }
                 if meta.isPrivate, let previous = session.snapshot.swarm.tracker, previous != url.absoluteString {
                     session.generation += 1
+                    let switchGeneration = session.generation
+                    let verificationTask = session.verificationTask
+                    verificationTask?.cancel()
+                    session.verificationTask = nil
+                    session.verificationWorkerID = nil
+                    session.verificationQueue.removeAll()
                     for task in session.connectionTasks.values { task.cancel() }
                     session.connectionTasks.removeAll()
                     for key in Array(session.peers.keys) { await disconnect(id, key: key) }
+                    await verificationTask?.value
+                    guard sessions[id] === session, session.generation == switchGeneration,
+                          !shuttingDown, !Task.isCancelled else { return }
+                    session.clearPieceWork()
                     session.candidates.removeAll(); session.knownEndpoints.removeAll(); session.lastAttempt.removeAll()
                 }
                 guard session.record.quarantineError == nil else { return }
@@ -371,10 +430,16 @@ extension TorrentEngine {
                 session.startedAnnounced = true
                 session.snapshot.error = nil
                 addCandidates(id, response.peers)
+                connectCandidates(id)
                 return
-            } catch { if session.record.quarantineError == nil { session.snapshot.error = "Tracker: \(error.localizedDescription)" } }
+            } catch {
+                if sessions[id] === session, session.generation == generation, !Task.isCancelled,
+                   session.record.quarantineError == nil { session.snapshot.error = "Tracker: \(error.localizedDescription)" }
+            }
         }
-        session.nextAnnounce = Date().addingTimeInterval(60)
+        if sessions[id] === session, session.generation == generation, !Task.isCancelled {
+            session.nextAnnounce = Date().addingTimeInterval(60)
+        }
     }
 
     func addCandidates(_ id: String, _ endpoints: [PeerEndpoint]) {

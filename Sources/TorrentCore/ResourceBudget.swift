@@ -5,31 +5,49 @@ public enum ResourceBudgetError: Error, Equatable, Sendable {
     case exceedsLimit
 }
 
-/// A FIFO, cancellation-safe shared byte budget. Release every successful acquisition
+/// A cancellation-safe shared byte budget, FIFO within each reservation purpose.
+/// Verification can bypass payload waiters to use its protected headroom.
+/// Release every successful acquisition
 /// after its payload is no longer retained, including failure and cancellation paths.
 public actor ResourceBudget {
-    public let limit: Int
+    public enum ReservationPurpose: Sendable { case payload, verification }
+    public private(set) var limit: Int
+    public let verificationHeadroom: Int
     public private(set) var used = 0
     public private(set) var highWaterMark = 0
     private struct Waiter {
         let id: UUID
         let bytes: Int
+        let purpose: ReservationPurpose
         let continuation: CheckedContinuation<Void, any Error>
     }
     private var waiters: [Waiter] = []
     var pendingCount: Int { waiters.count }
 
-    public init(limit: Int) {
-        precondition(limit >= 0)
+    public init(limit: Int, verificationHeadroom: Int = 0) {
+        precondition(limit >= 0 && verificationHeadroom >= 0)
         self.limit = limit
+        self.verificationHeadroom = verificationHeadroom
     }
 
-    public func acquire(_ bytes: Int) async throws {
+    /// Resizing preserves existing reservations, including usage above the new limit.
+    /// New admission waits until releases make room. Requests larger than the new
+    /// ceiling fail rather than remaining queued indefinitely.
+    public func resize(limit: Int) {
+        precondition(limit >= 0)
+        self.limit = limit
+        let impossible = waiters.filter { $0.bytes > ceiling(for: $0.purpose) }
+        waiters.removeAll { $0.bytes > ceiling(for: $0.purpose) }
+        for waiter in impossible { waiter.continuation.resume(throwing: ResourceBudgetError.exceedsLimit) }
+        drain()
+    }
+
+    public func acquire(_ bytes: Int, purpose: ReservationPurpose = .payload) async throws {
         try Task.checkCancellation()
         guard bytes >= 0 else { throw ResourceBudgetError.invalidReservation }
-        guard bytes <= limit else { throw ResourceBudgetError.exceedsLimit }
+        guard bytes <= ceiling(for: purpose) else { throw ResourceBudgetError.exceedsLimit }
         if bytes == 0 { return }
-        if waiters.isEmpty && bytes <= limit - used {
+        if !hasEarlierWaiter(for: purpose) && bytes <= ceiling(for: purpose) - used {
             reserve(bytes)
             return
         }
@@ -39,7 +57,7 @@ public actor ResourceBudget {
                 if Task.isCancelled {
                     continuation.resume(throwing: CancellationError())
                 } else {
-                    waiters.append(Waiter(id: id, bytes: bytes, continuation: continuation))
+                    waiters.append(Waiter(id: id, bytes: bytes, purpose: purpose, continuation: continuation))
                 }
             }
         } onCancel: {
@@ -54,11 +72,11 @@ public actor ResourceBudget {
     }
 
     /// Nonblocking admission for request pumps that must keep receiving in order
-    /// to release existing reservations. Never bypasses queued FIFO waiters.
-    public func tryAcquire(_ bytes: Int) -> Bool {
-        guard bytes >= 0, bytes <= limit, !Task.isCancelled else { return false }
+    /// to release existing reservations. Verification may bypass payload waiters.
+    public func tryAcquire(_ bytes: Int, purpose: ReservationPurpose = .payload) -> Bool {
+        guard bytes >= 0, bytes <= ceiling(for: purpose), !Task.isCancelled else { return false }
         if bytes == 0 { return true }
-        guard waiters.isEmpty, bytes <= limit - used else { return false }
+        guard !hasEarlierWaiter(for: purpose), bytes <= ceiling(for: purpose) - used else { return false }
         reserve(bytes)
         return true
     }
@@ -82,10 +100,28 @@ public actor ResourceBudget {
     }
 
     private func drain() {
-        while let first = waiters.first, first.bytes <= limit - used {
-            waiters.removeFirst()
+        // Keep verification independent of stalled payload admission so a full
+        // request pipeline cannot prevent completed pieces from being checked.
+        while let index = nextAdmissibleWaiter() {
+            let first = waiters.remove(at: index)
             reserve(first.bytes)
             first.continuation.resume()
         }
+    }
+
+    private func ceiling(for purpose: ReservationPurpose) -> Int {
+        purpose == .verification ? limit : max(0, limit - verificationHeadroom)
+    }
+
+    private func hasEarlierWaiter(for purpose: ReservationPurpose) -> Bool {
+        purpose == .payload ? !waiters.isEmpty : waiters.contains { $0.purpose == .verification }
+    }
+
+    private func nextAdmissibleWaiter() -> Int? {
+        if let verification = waiters.firstIndex(where: { $0.purpose == .verification }), waiters[verification].bytes <= limit - used {
+            return verification
+        }
+        guard let first = waiters.first, first.bytes <= ceiling(for: first.purpose) - used else { return nil }
+        return 0
     }
 }

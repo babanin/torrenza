@@ -126,6 +126,35 @@ struct DiscoveryTests {
         #expect(try await consumer.peers(infoHash: first).contains(PeerEndpoint(host: "::1", port: 4444)))
         await consumer.stop(); await publisher.stop(); await router.stop()
     }
+    @Test func dhtDeliversResponsivePeersBeforeSlowNodesFinish() async throws {
+        let responsive = try FakeDHTNode(), silent = try FakeDHTNode(silent: true)
+        let fastPort = try await responsive.start(), slowPort = try await silent.start()
+        let client = DHTClient(bootstrapNodes: [
+            PeerEndpoint(host: "127.0.0.1", port: fastPort),
+            PeerEndpoint(host: "127.0.0.1", port: slowPort)
+        ])
+        let delivery = DiscoveryDelivery()
+        let lookup = Task {
+            try await client.peers(infoHash: Data(repeating: 7, count: 20)) { peers in
+                await delivery.received(peers)
+            }
+        }
+        do {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+            while await delivery.peers.isEmpty, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(await delivery.peers == [PeerEndpoint(host: "192.0.2.8", port: 6881)])
+            lookup.cancel()
+            await #expect(throws: CancellationError.self) { try await lookup.value }
+            await client.stop(); responsive.stop(); silent.stop()
+        } catch {
+            lookup.cancel(); _ = try? await lookup.value
+            await client.stop(); responsive.stop(); silent.stop()
+            throw error
+        }
+    }
+
     @Test func dhtRealTimeout() async throws {
         let silent = try FakeDHTNode(silent: true)
         let port = try await silent.start()
@@ -197,4 +226,21 @@ private final class FakeReady: @unchecked Sendable {
     private var continuation: CheckedContinuation<UInt16, any Error>?
     func set(_ continuation: CheckedContinuation<UInt16, any Error>) { lock.lock(); self.continuation = continuation; lock.unlock() }
     func finish(_ result: Result<UInt16, any Error>) { lock.lock(); let c = continuation; continuation = nil; lock.unlock(); c?.resume(with: result) }
+}
+
+private actor DiscoveryDelivery {
+    var peers: [PeerEndpoint] = []
+    func received(_ peers: [PeerEndpoint]) { self.peers.append(contentsOf: peers) }
+}
+
+extension DiscoveryTests {
+    @Test func requestQueueLimitUsesOnlyPositiveIntegers() throws {
+        let fixtures: [(BencodeValue?, Int?)] = [(nil, nil), (.integer(128), 128), (.integer(1), 1), (.integer(0), nil), (.integer(-1), nil), (.bytes(Data("128".utf8)), nil)]
+        for (value, expected) in fixtures {
+            var values: [String: BencodeValue] = [:]
+            if let value { values["reqq"] = value }
+            let handshake = try PeerExtensions.parseHandshake(Bencode.encode(.dictionary(values)))
+            #expect(handshake.requestQueueLimit == expected)
+        }
+    }
 }

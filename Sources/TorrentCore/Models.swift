@@ -59,11 +59,19 @@ public enum TorrentError: Error, Sendable, LocalizedError, Equatable {
 }
 
 public enum StorageProfile: String, Codable, Sendable, CaseIterable { case automatic, ssd, hdd }
+public enum ThroughputPreset: String, Sendable, CaseIterable {
+    case standard, highThroughput
+    public var title: String { self == .standard ? "Standard" : "High throughput" }
+}
 public struct EngineSettings: Codable, Sendable, Equatable {
+    public static let peerRange = 1...1_000
+    public static let payloadBudgetRange = (32 * 1024 * 1024)...(256 * 1024 * 1024)
+    public static let downloadRequestWindowRange = 1...128
     public var maxDownloads = 2
     public var maxSeeds = 2
     public var maxPeers = 60
     public var payloadBudget = 32 * 1024 * 1024
+    public var downloadRequestWindow = 8
     public var downloadLimit: Int64 = 0
     public var uploadLimit: Int64 = 0
     public var defaultSeedRatio: Double = 1
@@ -73,16 +81,40 @@ public struct EngineSettings: Codable, Sendable, Equatable {
     public var destinationProfiles: [String: StorageProfile] = [:]
     public var bootstrapNodes = [PeerEndpoint(host: "dht.transmissionbt.com", port: 6881), PeerEndpoint(host: "dht.libtorrent.org", port: 25401)]
     public init() {}
+    /// Changes only resource ceilings; transfer policy and bandwidth limits stay intact.
+    public mutating func apply(_ preset: ThroughputPreset) {
+        switch preset {
+        case .standard:
+            maxPeers = 60; payloadBudget = 32 * 1024 * 1024; downloadRequestWindow = 8
+        case .highThroughput:
+            maxPeers = 1_000; payloadBudget = 256 * 1024 * 1024; downloadRequestWindow = 128
+        }
+    }
+    public var throughputPreset: ThroughputPreset? {
+        for preset in ThroughputPreset.allCases {
+            var candidate = EngineSettings()
+            candidate.apply(preset)
+            if maxPeers == candidate.maxPeers && payloadBudget == candidate.payloadBudget && downloadRequestWindow == candidate.downloadRequestWindow { return preset }
+        }
+        return nil
+    }
+    public mutating func normalizeResourceLimits() {
+        maxPeers = min(Self.peerRange.upperBound, max(Self.peerRange.lowerBound, maxPeers))
+        payloadBudget = min(Self.payloadBudgetRange.upperBound, max(Self.payloadBudgetRange.lowerBound, payloadBudget))
+        downloadRequestWindow = min(Self.downloadRequestWindowRange.upperBound, max(Self.downloadRequestWindowRange.lowerBound, downloadRequestWindow))
+    }
     private enum CodingKeys: String, CodingKey {
-        case maxDownloads, maxSeeds, maxPeers, payloadBudget, downloadLimit, uploadLimit, defaultSeedRatio, preventIdleSleep, storageProfile, destinationProfiles, bootstrapNodes
+        case maxDownloads, maxSeeds, maxPeers, payloadBudget, downloadRequestWindow, downloadLimit, uploadLimit, defaultSeedRatio, preventIdleSleep, storageProfile, destinationProfiles, bootstrapNodes
     }
     public init(from decoder: any Decoder) throws {
         self.init()
         let values = try decoder.container(keyedBy: CodingKeys.self)
         maxDownloads = min(16, max(1, try values.decodeIfPresent(Int.self, forKey: .maxDownloads) ?? maxDownloads))
         maxSeeds = min(16, max(0, try values.decodeIfPresent(Int.self, forKey: .maxSeeds) ?? maxSeeds))
-        maxPeers = min(200, max(1, try values.decodeIfPresent(Int.self, forKey: .maxPeers) ?? maxPeers))
-        payloadBudget = 32 * 1024 * 1024
+        maxPeers = try values.decodeIfPresent(Int.self, forKey: .maxPeers) ?? maxPeers
+        payloadBudget = try values.decodeIfPresent(Int.self, forKey: .payloadBudget) ?? payloadBudget
+        downloadRequestWindow = try values.decodeIfPresent(Int.self, forKey: .downloadRequestWindow) ?? downloadRequestWindow
+        normalizeResourceLimits()
         downloadLimit = max(0, try values.decodeIfPresent(Int64.self, forKey: .downloadLimit) ?? 0)
         uploadLimit = max(0, try values.decodeIfPresent(Int64.self, forKey: .uploadLimit) ?? 0)
         let ratio = try values.decodeIfPresent(Double.self, forKey: .defaultSeedRatio) ?? 1

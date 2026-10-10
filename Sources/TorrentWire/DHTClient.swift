@@ -102,7 +102,7 @@ public actor DHTClient {
         tokens.removeAll(); storedPeers.removeAll()
         await persist()
     }
-    public func peers(infoHash: Data) async throws -> [PeerEndpoint] {
+    public func peers(infoHash: Data, onPeers: (@Sendable ([PeerEndpoint]) async -> Void)? = nil) async throws -> [PeerEndpoint] {
         guard infoHash.count == 20 else { throw TorrentError.invalidMessage("DHT info hash must be 20 bytes") }
         if listener == nil || boundPort == 0 { try await start() }
         try Task.checkCancellation()
@@ -127,8 +127,15 @@ public actor DHTClient {
             let replies = await withTaskGroup(of: (PeerEndpoint, [String: BencodeValue]?).self) { group in
                 for endpoint in batch {
                     group.addTask {
-                    do { return (endpoint, try await self.query("get_peers", arguments: ["info_hash": .bytes(infoHash), "want": .list([.bytes(Data("n4".utf8)), .bytes(Data("n6".utf8))])], to: endpoint)) }
-                    catch { return (endpoint, nil) }
+                        do {
+                            let response = try await self.query("get_peers", arguments: ["info_hash": .bytes(infoHash), "want": .list([.bytes(Data("n4".utf8)), .bytes(Data("n6".utf8))])], to: endpoint)
+                            // A responsive node must not wait for the other alpha queries.
+                            if let onPeers, !Task.isCancelled {
+                                let found = Self.responsePeers(response)
+                                if !found.isEmpty { await onPeers(found) }
+                            }
+                            return (endpoint, response)
+                        } catch { return (endpoint, nil) }
                 }
                 }
                 var replies: [(PeerEndpoint, [String: BencodeValue]?)] = []
@@ -141,13 +148,7 @@ public actor DHTClient {
                 if let token = reply["token"]?.dataValue, !token.isEmpty, token.count <= 256 {
                     receivedTokens.append(Token(endpoint: endpoint, value: token, received: Date()))
                 }
-                if let values = reply["values"]?.listValue {
-                    for value in values.prefix(128) {
-                        guard let bytes = value.dataValue, bytes.count == 6 || bytes.count == 18,
-                              let found = try? CompactAddress.decode(bytes, ipv6: bytes.count == 18) else { continue }
-                        peers.formUnion(found)
-                    }
-                }
+                peers.formUnion(Self.responsePeers(reply))
                 for (field, ipv6) in [("nodes", false), ("nodes6", true)] {
                     guard let data = reply[field]?.dataValue else { continue }
                     for contact in Self.decodeNodes(data, ipv6: ipv6) where !visited.contains(contact.endpoint) && !candidates.contains(contact.endpoint) {
@@ -164,6 +165,16 @@ public actor DHTClient {
         await persist()
         return Array(peers.prefix(128))
     }
+    private static func responsePeers(_ response: [String: BencodeValue]) -> [PeerEndpoint] {
+        var peers = Set<PeerEndpoint>()
+        for value in (response["values"]?.listValue ?? []).prefix(128) {
+            guard let bytes = value.dataValue, bytes.count == 6 || bytes.count == 18,
+                  let found = try? CompactAddress.decode(bytes, ipv6: bytes.count == 18) else { continue }
+            peers.formUnion(found)
+        }
+        return Array(peers.prefix(128))
+    }
+
     public func announce(infoHash: Data, port: UInt16) async {
         guard infoHash.count == 20, port != 0, !stopped else { return }
         if tokens[infoHash]?.contains(where: { Date().timeIntervalSince($0.received) < 300 }) != true { _ = try? await peers(infoHash: infoHash) }

@@ -4,98 +4,16 @@ import TorrentCore
 import TorrentWire
 
 extension TorrentEngine {
-    var totalPeers: Int { pendingIncoming + sessions.values.reduce(0) { $0 + $1.peers.count + $1.connecting.count } }
-
-    func connectCandidates(_ id: String) {
-        guard !shuttingDown, let session = sessions[id], [.downloading, .seeding].contains(session.snapshot.state) else { return }
-        let active = max(1, sessions.values.filter { [.downloading, .seeding].contains($0.snapshot.state) }.count)
-        let perTransfer = max(1, effectivePeerLimit / active)
-        var attempts = session.candidates.count
-        while attempts > 0, totalPeers < effectivePeerLimit, session.peers.count + session.connecting.count < perTransfer, !session.candidates.isEmpty {
-            attempts -= 1
-            let endpoint = session.candidates.removeFirst()
-            if let last = session.lastAttempt[endpoint], Date().timeIntervalSince(last) < 30 { session.candidates.append(endpoint); continue }
-            session.lastAttempt[endpoint] = Date()
-            guard !session.connecting.contains(endpoint), !session.peers.values.contains(where: { $0.endpoint == endpoint }) else { continue }
-            session.connecting.insert(endpoint)
-            let taskID = UUID()
-            session.connectionTasks[taskID] = startBackgroundTask { engine in await engine.connect(id, endpoint: endpoint); engine.sessions[id]?.connectionTasks.removeValue(forKey: taskID) }
-        }
-    }
-
-    func connect(_ id: String, endpoint: PeerEndpoint) async {
-        guard let session = sessions[id] else { return }
-        let generation = session.generation
-        defer {
-            session.connecting.remove(endpoint)
-            if session.generation == generation && !session.peers.values.contains(where: { $0.endpoint == endpoint }) { session.candidates.append(endpoint) }
-        }
-        do {
-            let cap = max(32_768, session.record.verified.bytes.count + 1)
-            let connection = try PeerConnection(endpoint: endpoint, maximumFrameLength: cap)
-            do {
-                let handshake = try await connection.connect(infoHash: session.record.metainfo.infoHash, peerID: peerID, supportsDHT: !session.record.metainfo.isPrivate)
-                guard session.generation == generation, !Task.isCancelled, handshake.peerID != peerID, [.downloading, .seeding].contains(session.snapshot.state) else { await connection.close(); return }
-                try await register(id, connection: connection, endpoint: endpoint, handshake: handshake)
-            } catch { await connection.close() }
-        } catch { /* A failed candidate is isolated from the transfer. */ }
-    }
-
-    func accept(_ raw: NWConnection) async {
-        guard !shuttingDown, totalPeers < effectivePeerLimit else { raw.cancel(); return }
-        pendingIncoming += 1
-        defer { pendingIncoming -= 1 }
-        let connection = PeerConnection(connection: raw)
-        do {
-            let handshake = try await connection.receiveHandshake()
-            let id = handshake.infoHash.hexString
-            guard !shuttingDown, let session = sessions[id], [.downloading, .seeding].contains(session.snapshot.state), handshake.peerID != peerID,
-                  totalPeers < effectivePeerLimit else { await connection.close(); return }
-            try await connection.sendHandshake(infoHash: handshake.infoHash, peerID: peerID, supportsDHT: !session.record.metainfo.isPrivate)
-            let endpoint: PeerEndpoint
-            if case .hostPort(let host, let port) = raw.endpoint { endpoint = PeerEndpoint(host: "\(host)", port: port.rawValue) }
-            else { endpoint = PeerEndpoint(host: "incoming", port: 0) }
-            try await register(id, connection: connection, endpoint: endpoint, handshake: handshake, isOutbound: false)
-        } catch { await connection.close() }
-    }
-
-    func register(_ id: String, connection: PeerConnection, endpoint: PeerEndpoint, handshake: PeerHandshake, isOutbound: Bool = true) async throws {
-        guard !shuttingDown, let session = sessions[id], session.record.quarantineError == nil, [.downloading, .seeding].contains(session.snapshot.state) else { await connection.close(); return }
-        let generation = session.generation
-        let cap = max(32_768, session.record.verified.bytes.count + 1)
-        guard await budget.tryAcquire(cap * 4) else { await connection.close(); return }
-        guard !shuttingDown, session.generation == generation, session.record.quarantineError == nil, [.downloading, .seeding].contains(session.snapshot.state) else { await budget.release(cap * 4); await connection.close(); return }
-        await connection.setMaximumFrameLength(cap)
-        guard !shuttingDown, session.generation == generation, session.record.quarantineError == nil, [.downloading, .seeding].contains(session.snapshot.state) else { await budget.release(cap * 4); await connection.close(); return }
-        let key = UUID()
-        session.peers[key] = ActivePeer(connection: connection, endpoint: endpoint, availability: PieceBitset(count: session.wanted.count))
-        session.peers[key]?.receiveReservation = cap * 4
-        session.peers[key]?.isOutbound = isOutbound
-        do {
-        try await connection.send(.bitfield(session.record.verified.bytes))
-        if handshake.supportsExtensions {
-            try await connection.send(.extended(id: 0, payload: PeerExtensions.extendedHandshake(metadataSize: session.record.metainfo.rawInfo.count, allowPEX: !session.record.metainfo.isPrivate)))
-        }
-        if !session.selectedComplete { try await connection.send(.interested) }
-        session.peers[key]?.task = startBackgroundTask { engine in
-            do {
-                while !Task.isCancelled {
-                    let message = try await connection.receive()
-                    try await engine.handle(id, key: key, message: message)
-                }
-            } catch { /* Disconnect releases all outstanding reservations below. */ }
-            await engine.disconnect(id, key: key)
-        }
-        } catch { await disconnect(id, key: key); throw error }
-    }
-
     func disconnect(_ id: String, key: UUID) async {
         guard let session = sessions[id], let peer = session.peers.removeValue(forKey: key) else { return }
+        session.removePeerAvailability(peer)
         session.knownEndpoints.remove(peer.endpoint)
         if [.downloading, .seeding].contains(session.snapshot.state), peer.endpoint.port > 0, !session.candidates.contains(peer.endpoint) { session.candidates.append(peer.endpoint) }
         peer.task?.cancel()
         peer.pumpTask?.cancel()
         peer.pexTask?.cancel()
+        peer.announcementTask?.cancel()
+        peer.uploadTask?.cancel()
         for request in peer.pending.keys {
             session.pieceWork[request.piece]?.requested.remove(request.begin)
             await budget.release(request.length)
@@ -109,10 +27,10 @@ extension TorrentEngine {
         peer.lastMessage = Date(); session.peers[key] = peer
         switch message {
         case .bitfield(let data):
-            session.peers[key]?.availability = try PieceBitset(count: session.wanted.count, bytes: data)
+            session.replacePeerAvailability(key: key, availability: try PieceBitset(count: session.wanted.count, bytes: data))
         case .have(let index):
             guard index >= 0 && index < session.wanted.count else { throw TorrentError.invalidMessage("Invalid have index") }
-            session.peers[key]?.availability[index] = true
+            session.recordPeerHave(key: key, index: index)
         case .choke:
             session.peers[key]?.choked = true
             let pending = session.peers[key]?.pending ?? [:]
@@ -129,10 +47,11 @@ extension TorrentEngine {
         case .piece(let index, let begin, let block):
             try await receiveBlock(id, key: key, index: index, begin: begin, block: block)
         case .request(let index, let begin, let length):
-            try await upload(id, key: key, index: index, begin: begin, length: length)
+            queueUpload(id, key: key, request: BlockRequest(piece: index, begin: begin, length: length))
         case .extended(let extensionID, let payload):
             if extensionID == 0 {
                 let handshake = try PeerExtensions.parseHandshake(payload)
+                session.peers[key]?.remoteRequestQueueLimit = handshake.requestQueueLimit
                 session.peers[key]?.metadataID = handshake.metadataID
                 session.peers[key]?.pexID = handshake.pexID
             } else if extensionID == 1 {
@@ -148,7 +67,9 @@ extension TorrentEngine {
             } else if extensionID == 2 && !session.record.metainfo.isPrivate {
                 addCandidates(id, try PeerExtensions.parsePEX(payload))
             }
-        case .cancel, .port, .keepAlive: break
+        case .cancel(let index, let begin, let length):
+            session.peers[key]?.uploadQueue.removeAll { $0 == BlockRequest(piece: index, begin: begin, length: length) }
+        case .port, .keepAlive: break
         }
         queueRequests(id, key: key)
     }
@@ -186,13 +107,21 @@ extension TorrentEngine {
         guard let session = sessions[id], session.snapshot.state == .downloading, let initial = session.peers[key], !initial.pumping else { return }
         session.peers[key]?.pumping = true
         defer { session.peers[key]?.pumping = false }
-        while let peer = session.peers[key], !peer.choked, peer.pending.count < 8 {
+        let generation = session.generation
+        while !Task.isCancelled, sessions[id] === session, session.generation == generation,
+              let peer = session.peers[key], !peer.choked,
+              peer.pending.count < min(configuration.downloadRequestWindow, peer.remoteRequestQueueLimit ?? configuration.downloadRequestWindow) {
             guard let request = nextBlock(session, peer: peer) else { return }
             session.pieceWork[request.piece, default: PieceWork()].requested.insert(request.begin)
             do {
-                guard await budget.tryAcquire(request.length) else { session.pieceWork[request.piece]?.requested.remove(request.begin); return }
-                guard session.peers[key] != nil, session.snapshot.state == .downloading else {
-                    await budget.release(request.length); session.pieceWork[request.piece]?.requested.remove(request.begin); return
+                guard await budget.tryAcquire(request.length) else {
+                    if session.generation == generation { session.pieceWork[request.piece]?.requested.remove(request.begin) }
+                    return
+                }
+                guard !Task.isCancelled, sessions[id] === session, session.generation == generation, session.peers[key] != nil, session.snapshot.state == .downloading else {
+                    await budget.release(request.length)
+                    if session.generation == generation { session.pieceWork[request.piece]?.requested.remove(request.begin) }
+                    return
                 }
                 session.peers[key]?.pending[request] = .distantFuture
                 try await limiter.wait(bytes: request.length, upload: false)
@@ -208,43 +137,6 @@ extension TorrentEngine {
         }
     }
 
-    func nextBlock(_ session: EngineSession, peer: ActivePeer) -> BlockRequest? {
-        let meta = session.record.metainfo
-        for index in session.pieceWork.keys.sorted() where peer.availability[index] {
-            guard let work = session.pieceWork[index], !work.verifying else { continue }
-            let pieceLength = meta.lengthOfPiece(index)
-            let blockCount = (pieceLength + 16_383) / 16_384
-            // A saturated piece has no holes; do not rescan thousands of received
-            // blocks on every scheduling pass while waiting for its last response.
-            guard work.received.count + work.requested.count < blockCount else { continue }
-            var begin = work.nextBlockBegin
-            for _ in 0..<blockCount {
-                let next = begin + 16_384 < pieceLength ? begin + 16_384 : 0
-                if !work.received.contains(begin) && !work.requested.contains(begin) {
-                    session.pieceWork[index]?.nextBlockBegin = next
-                    return BlockRequest(piece: index, begin: begin, length: min(16_384, pieceLength - begin))
-                }
-                // Wrap once to find holes left by cancelled or disconnected peers.
-                begin = next
-            }
-        }
-        // SIMD filters large availability bitmaps; rarity is evaluated on a bounded
-        // candidate window to keep scheduling cheap on torrents with tiny pieces.
-        var inFlight = PieceBitset(count: session.wanted.count)
-        for index in session.pieceWork.keys { inFlight[index] = true }
-        let candidates = PieceBitset.candidates(available: peer.availability, wanted: session.wanted, verified: session.record.verified, inFlight: inFlight)
-        var best: Int?, rarity = Int.max, candidate = candidates.firstSetIndex(), inspected = 0
-        while let index = candidate, inspected < 256 {
-            let available = session.peers.values.reduce(0) { $0 + ($1.availability[index] ? 1 : 0) }
-            if available < rarity { best = index; rarity = available }
-            if profile(for: session) == .hdd || (profile(for: session) == .automatic && session.automaticHDD) { break }
-            candidate = candidates.firstSetIndex(from: index + 1); inspected += 1
-        }
-        guard let index = best else { return nil }
-        session.pieceWork[index] = PieceWork(nextBlockBegin: meta.lengthOfPiece(index) > 16_384 ? 16_384 : 0)
-        return BlockRequest(piece: index, begin: 0, length: min(16_384, meta.lengthOfPiece(index)))
-    }
-
     func receiveBlock(_ id: String, key: UUID, index: Int, begin: Int, block: Data) async throws {
         guard let session = sessions[id], let disk = session.disk else { return }
         let generation = session.generation
@@ -257,41 +149,157 @@ extension TorrentEngine {
         runStatistics.lifetimeDownloadedBytes += Int64(block.count)
         do {
             try await disk.write(offset: Int64(index) * Int64(session.record.metainfo.pieceLength) + Int64(begin), data: block)
-            session.pieceWork[index]?.requested.remove(begin)
-            session.pieceWork[index]?.received.insert(begin)
+            if sessions[id] === session, session.generation == generation, session.record.quarantineError == nil {
+                session.pieceWork[index]?.requested.remove(begin)
+                session.pieceWork[index]?.received.insert(begin)
+            }
             await budget.release(block.count)
         } catch {
             await budget.release(block.count)
-            if !(error is CancellationError) { await quarantine(id, error: error) }
+            if !(error is CancellationError), sessions[id] === session, session.generation == generation { await quarantine(id, error: error) }
             throw error
         }
-        guard session.generation == generation, session.record.quarantineError == nil,
+        guard sessions[id] === session, session.generation == generation, session.record.quarantineError == nil,
               let work = session.pieceWork[index], !work.verifying,
               work.received.count == (session.record.metainfo.lengthOfPiece(index) + 16_383) / 16_384 else { return }
         session.pieceWork[index]?.verifying = true
-        try await budget.acquire(65_536)
-        let valid: Bool
-        do { valid = try await disk.verifyPiece(index); await budget.release(65_536) }
-        catch { await budget.release(65_536); session.pieceWork.removeValue(forKey: index); if !(error is CancellationError) { await quarantine(id, error: error) }; throw error }
-        guard session.generation == generation, session.record.quarantineError == nil else { return }
-        session.pieceWork.removeValue(forKey: index)
-        if valid {
-            session.record.verified[index] = true
-            session.progressDirty = true
-            for other in session.peers.values { try? await other.connection.send(.have(index)) }
-            if session.record.verified.isComplete && !session.completedAnnounced {
-                session.completedAnnounced = true
-                startBackgroundTask { engine in await engine.announce(id, event: .completed) }
+        session.verificationQueue.append((index, key))
+        startVerificationWorker(id, session: session)
+    }
+
+    func startVerificationWorker(_ id: String, session: EngineSession) {
+        guard session.verificationTask == nil, !session.verificationQueue.isEmpty, !shuttingDown else { return }
+        let workerID = UUID()
+        let generation = session.generation
+        session.verificationWorkerID = workerID
+        session.verificationTask = startBackgroundTask { engine in
+            guard let current = engine.sessions[id], current.generation == generation, current.verificationWorkerID == workerID else { return }
+            await engine.verifyCompletedPieces(id, session: current, generation: generation, workerID: workerID)
+        }
+    }
+
+    func verifyCompletedPieces(_ id: String, session: EngineSession, generation: Int, workerID: UUID) async {
+        defer {
+            if session.verificationWorkerID == workerID {
+                session.verificationTask = nil
+                session.verificationWorkerID = nil
             }
-            if session.selectedComplete {
-                await refreshProgress(session); session.progressDirty = false
-                for other in session.peers.values { try? await other.connection.send(.notInterested) }
-                await schedule()
+        }
+        while !Task.isCancelled, sessions[id] === session, session.generation == generation,
+              session.record.quarantineError == nil, !session.verificationQueue.isEmpty, let disk = session.disk {
+            let completion = session.verificationQueue.removeFirst()
+            let valid: Bool
+            do {
+                valid = try await verifyPiece(disk, index: completion.piece)
+            } catch {
+                guard sessions[id] === session, session.generation == generation else { return }
+                if !(error is CancellationError) {
+                    // Quarantine drains workers. Detach this failing worker first so
+                    // stopSession cannot await the very task calling it.
+                    session.verificationTask = nil
+                    session.verificationWorkerID = nil
+                    await quarantine(id, error: error)
+                }
+                return
             }
-        } else {
-            await disconnect(id, key: key)
-            guard session.generation == generation, session.record.quarantineError == nil else { return }
-            session.snapshot.error = "A corrupt piece was discarded and will be downloaded again"
+            guard !Task.isCancelled, sessions[id] === session, session.generation == generation,
+                  session.record.quarantineError == nil else { return }
+            session.removePieceWork(completion.piece)
+            if valid {
+                session.record.verified[completion.piece] = true
+                session.progressDirty = true
+                for key in session.peers.keys { queueAnnouncement(id, key: key, have: completion.piece) }
+                if session.record.verified.isComplete && !session.completedAnnounced {
+                    session.completedAnnounced = true
+                    startBackgroundTask { engine in await engine.announce(id, event: .completed) }
+                }
+                if session.selectedComplete {
+                    await refreshProgress(session)
+                    session.progressDirty = false
+                    for key in session.peers.keys { queueAnnouncement(id, key: key, notInterested: true) }
+                    // Scheduling can stop this transfer at its seed ratio. Run it
+                    // outside the worker so stopSession can safely drain us.
+                    startBackgroundTask { engine in await engine.schedule() }
+                }
+            } else {
+                await disconnect(id, key: completion.source)
+                guard sessions[id] === session, session.generation == generation, session.record.quarantineError == nil else { return }
+                session.snapshot.error = "A corrupt piece was discarded and will be downloaded again"
+            }
+            for key in session.peers.keys { queueRequests(id, key: key) }
+        }
+    }
+
+    /// One writer per peer coalesces duplicate HAVEs in a fixed-size bitmap.
+    /// Registration's four-frame reservation includes this bitmap. Bitfields are
+    /// sent only during the initial handshake, as required by BEP 3.
+    func queueAnnouncement(_ id: String, key: UUID, have: Int? = nil, notInterested: Bool = false) {
+        guard let session = sessions[id], session.peers[key] != nil else { return }
+        if let have, (0..<session.wanted.count).contains(have) {
+            if session.peers[key]?.pendingHaves == nil {
+                session.peers[key]?.pendingHaves = PieceBitset(count: session.wanted.count)
+            }
+            session.peers[key]?.pendingHaves?[have] = true
+        }
+        if notInterested { session.peers[key]?.pendingNotInterested = true }
+        guard session.peers[key]?.announcementTask == nil else { return }
+        let generation = session.generation
+        session.peers[key]?.announcementTask = startBackgroundTask { engine in
+            guard let current = engine.sessions[id], current.generation == generation else { return }
+            await engine.sendAnnouncements(id, key: key, session: current, generation: generation)
+        }
+    }
+
+    func sendAnnouncements(_ id: String, key: UUID, session: EngineSession, generation: Int) async {
+        defer { session.peers[key]?.announcementTask = nil }
+        while !Task.isCancelled, sessions[id] === session, session.generation == generation,
+              let connection = session.peers[key]?.connection {
+            let message: PeerMessage
+            let cursor = session.peers[key]?.announcementCursor ?? 0
+            if let index = session.peers[key]?.pendingHaves?.firstSetIndex(from: cursor) ?? session.peers[key]?.pendingHaves?.firstSetIndex() {
+                session.peers[key]?.pendingHaves?[index] = false
+                session.peers[key]?.announcementCursor = index + 1
+                message = .have(index)
+            } else if session.peers[key]?.pendingNotInterested == true {
+                session.peers[key]?.pendingNotInterested = false
+                message = .notInterested
+            } else { return }
+            do { try await connection.send(message) }
+            catch { await disconnect(id, key: key); return }
+        }
+    }
+
+    /// Keep upload backpressure outside the receive loop, which must continue
+    /// consuming downloaded blocks to release shared payload reservations.
+    func queueUpload(_ id: String, key: UUID, request: BlockRequest) {
+        guard let session = sessions[id], let peer = session.peers[key],
+              peer.uploadQueue.count + (peer.activeUpload == nil ? 0 : 1) < 32,
+              peer.activeUpload != request, !peer.uploadQueue.contains(request),
+              peer.interested, request.piece >= 0, request.piece < session.record.verified.count,
+              session.record.verified[request.piece], request.begin >= 0,
+              request.length > 0, request.length <= 16_384,
+              request.begin <= session.record.metainfo.lengthOfPiece(request.piece) - request.length else { return }
+        session.peers[key]?.uploadQueue.append(request)
+        guard peer.uploadTask == nil else { return }
+        let generation = session.generation
+        session.peers[key]?.uploadTask = startBackgroundTask { engine in
+            await engine.sendQueuedUploads(id, key: key, generation: generation)
+        }
+    }
+
+    func sendQueuedUploads(_ id: String, key: UUID, generation: Int) async {
+        guard let session = sessions[id], session.generation == generation else { return }
+        defer {
+            session.peers[key]?.activeUpload = nil
+            session.peers[key]?.uploadTask = nil
+        }
+        while !Task.isCancelled, sessions[id] === session, session.generation == generation,
+              let request = session.peers[key]?.uploadQueue.first {
+            session.peers[key]?.uploadQueue.removeFirst()
+            session.peers[key]?.activeUpload = request
+            do { try await upload(id, key: key, index: request.piece, begin: request.begin, length: request.length) }
+            catch { await disconnect(id, key: key); return }
+            session.peers[key]?.activeUpload = nil
         }
     }
 
@@ -301,16 +309,17 @@ extension TorrentEngine {
               session.record.verified[index], begin >= 0, length > 0, length <= 16_384,
               begin <= session.record.metainfo.lengthOfPiece(index) - length else { return }
         if session.selectedComplete && session.ratioReached { return }
+        let generation = session.generation
         try await budget.acquire(length)
         do {
             try await limiter.wait(bytes: length, upload: true)
             let block: Data
             do { block = try await disk.read(offset: Int64(index) * Int64(session.record.metainfo.pieceLength) + Int64(begin), length: length) }
             catch {
-                if !(error is CancellationError) { await quarantine(id, error: error) }
+                if !(error is CancellationError), sessions[id] === session, session.generation == generation { await quarantine(id, error: error) }
                 throw error
             }
-            guard session.record.quarantineError == nil, session.peers[key] != nil else { await budget.release(length); return }
+            guard !Task.isCancelled, sessions[id] === session, session.generation == generation, session.record.quarantineError == nil, session.peers[key] != nil else { await budget.release(length); return }
             try await peer.connection.send(.piece(index: index, begin: begin, block: block))
             session.recordUploadedBlock(offset: Int64(index) * Int64(session.record.metainfo.pieceLength) + Int64(begin), length: length)
             runStatistics.current.uploadedBytes += Int64(length)

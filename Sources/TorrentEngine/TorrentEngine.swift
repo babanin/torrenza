@@ -17,6 +17,9 @@ struct ActivePeer {
     var choked = true
     var interested = false
     var pending: [BlockRequest: Date] = [:]
+    var remoteRequestQueueLimit: Int?
+    var availablePieceCount = 0
+    var isSeed: Bool { availablePieceCount == availability.count }
     var metadataID: UInt8?
     var pexID: UInt8?
     var task: Task<Void, Never>?
@@ -25,6 +28,13 @@ struct ActivePeer {
     var pumping = false
     var pumpTask: Task<Void, Never>?
     var pexTask: Task<Void, Never>?
+    var uploadQueue: [BlockRequest] = []
+    var activeUpload: BlockRequest?
+    var uploadTask: Task<Void, Never>?
+    var announcementTask: Task<Void, Never>?
+    var pendingHaves: PieceBitset?
+    var announcementCursor = 0
+    var pendingNotInterested = false
     var lastPEX = Date.distantPast
     var advertisedPeers: Set<PeerEndpoint> = []
     var isOutbound = true
@@ -47,14 +57,19 @@ final class EngineSession {
     var knownEndpoints: Set<PeerEndpoint> = []
     var lastAttempt: [PeerEndpoint: Date] = [:]
     var pieceWork: [Int: PieceWork] = [:]
+    var picker: PiecePickerState
     var connecting: Set<PeerEndpoint> = []
     var connectionTasks: [UUID: Task<Void, Never>] = [:]
+    var verificationQueue: [(piece: Int, source: UUID)] = []
+    var verificationTask: Task<Void, Never>?
+    var verificationWorkerID: UUID?
     var generation = 0
     var task: Task<Void, Never>?
     var nextAnnounce = Date.distantPast
     var startedAnnounced = false
     var completedAnnounced = false
     var discoveryInProgress = false
+    var discoveryGeneration: Int?
     var busy = false
     var progressDirty = false
     var securityScoped = false
@@ -72,6 +87,7 @@ final class EngineSession {
         self.record = record
         fileSnapshotIndices = Dictionary(uniqueKeysWithValues: record.metainfo.files.filter { !$0.isPadding }.enumerated().map { ($0.element.index, $0.offset) })
         wanted = Self.wantedPieces(record)
+        picker = PiecePickerState(count: record.metainfo.pieceHashes.count)
         snapshot = TransferSnapshot(id: record.metainfo.id, name: record.metainfo.name, destination: record.destination, isMultiFile: record.metainfo.isMultiFile, state: record.wantedRunning ? .queued : .paused, files: record.metainfo.files.filter { !$0.isPadding }.map { FileSnapshot(file: $0, selected: record.selectedFiles.contains($0.index), uploadedBytes: record.fileUploadedBytes?[$0.index] ?? 0) }, fileUploadHistoryComplete: record.fileUploadHistoryComplete ?? false, selectedBytes: record.metainfo.files.filter { record.selectedFiles.contains($0.index) }.reduce(0) { $0 + $1.length }, downloadedBytes: record.downloaded, uploadedBytes: record.uploaded, seedRatio: record.seedRatio, trackers: record.metainfo.trackerTiers.flatMap { $0 }.map(\.absoluteString), refreshSource: record.refreshSource ?? record.metainfo.refreshSource)
         if let error = record.quarantineError {
             snapshot.state = .failed
@@ -134,8 +150,9 @@ public actor TorrentEngine {
     var statisticsLoaded = false
     var statisticsLoadTask: Task<StatisticsSnapshot, Error>?
     var configuration = EngineSettings()
-    var budget = ResourceBudget(limit: 32 * 1024 * 1024)
+    let budget = ResourceBudget(limit: 32 * 1024 * 1024, verificationHeadroom: 1024 * 1024)
     let limiter = TransferRateLimiter()
+    let verificationSlots = ResourceBudget(limit: 4)
     let persistence: EnginePersistence
     let directory: URL
     var dht: DHTClient?
@@ -147,7 +164,8 @@ public actor TorrentEngine {
     var lastCheckpoint = Date()
     var suspended: Set<String> = []
     var shuttingDown = false
-    var pendingIncoming = 0
+    var connectionAdmissions: [UUID: ConnectionAdmission] = [:]
+    var connectionCursor = 0
     var preparedArchive: EngineArchive?
     var activationPrepared = false
     var activating = false
@@ -423,12 +441,13 @@ public actor TorrentEngine {
         var settings = settings
         settings.maxDownloads = min(16, max(1, settings.maxDownloads))
         settings.maxSeeds = min(16, max(0, settings.maxSeeds))
-        settings.maxPeers = min(200, max(1, settings.maxPeers))
-        settings.payloadBudget = configuration.payloadBudget // fixed live budget; prevents unbalanced reservations
+        settings.normalizeResourceLimits()
         settings.downloadLimit = max(0, settings.downloadLimit)
         settings.uploadLimit = max(0, settings.uploadLimit)
         configuration = settings
+        await budget.resize(limit: settings.payloadBudget)
         await limiter.configure(download: settings.downloadLimit, upload: settings.uploadLimit)
+        await rebalanceConnections()
         try? await checkpoint()
         await schedule()
     }
@@ -501,7 +520,8 @@ public actor TorrentEngine {
         needsDirtyCheckpoint = archive.cleanShutdown == true
         configuration = archive.settings
         await limiter.configure(download: configuration.downloadLimit, upload: configuration.uploadLimit)
-        configuration.payloadBudget = 32 * 1024 * 1024
+        configuration.normalizeResourceLimits()
+        await budget.resize(limit: configuration.payloadBudget)
         for var record in archive.records {
             var scoped = false
             if let bookmark = record.bookmark {
