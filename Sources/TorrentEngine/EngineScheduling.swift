@@ -125,7 +125,7 @@ extension TorrentEngine {
         }
         if let owned = session.record.ownedSignatures {
             let selectedPaths = Set(session.record.metainfo.files.filter { session.record.selectedFiles.contains($0.index) }.map { $0.path.joined(separator: "/") })
-            try await TorrentDisk.validateOwnedFiles(destination: session.record.destination, signatures: owned.filter { selectedPaths.contains($0.path) })
+            try await TorrentDisk.validateOwnedFiles(destination: session.record.destination, signatures: owned.filter { selectedPaths.contains($0.path) }, expectedVolumeUUID: session.record.volumeUUID)
         }
         let generation = session.generation
         let disk = try TorrentDisk(metainfo: session.record.metainfo, destination: session.record.destination, selectedFiles: session.record.selectedFiles, allowExisting: true, requireExistingPayload: !allowNewFiles, requireExistingSidecars: !allowNewFiles)

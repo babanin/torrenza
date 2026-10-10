@@ -4,19 +4,21 @@ import TorrentCore
 
 extension TorrentDisk {
     /// Validates persisted ownership across all selections without trusting names alone.
-    public static func validateOwnedFiles(destination: URL, signatures: [DiskSignature], allowMissing: Bool = true) async throws {
+    /// Returns current signatures, rebasing a remounted device only on the recorded volume.
+    @discardableResult
+    public static func validateOwnedFiles(destination: URL, signatures: [DiskSignature], allowMissing: Bool = true, expectedVolumeUUID: String? = nil) async throws -> [DiskSignature] {
         try await OwnedFiles.perform {
-            let operation = try OwnedFiles(destination: destination)
-            try operation.validate(signatures, allowMissing: allowMissing)
+            let operation = try OwnedFiles(destination: destination, expectedVolumeUUID: expectedVolumeUUID)
+            return try operation.validate(signatures, allowMissing: allowMissing)
         }
     }
 
     /// Removes only recorded file identities, including sidecars from older selections.
     /// Missing files are harmless; a single replaced file prevents the initial deletion pass.
-    public static func removeOwnedFiles(destination: URL, signatures: [DiskSignature]) async throws {
+    public static func removeOwnedFiles(destination: URL, signatures: [DiskSignature], expectedVolumeUUID: String? = nil) async throws {
         guard !signatures.isEmpty else { return }
         try await OwnedFiles.perform {
-            let operation = try OwnedFiles(destination: destination)
+            let operation = try OwnedFiles(destination: destination, expectedVolumeUUID: expectedVolumeUUID)
             try operation.remove(signatures)
         }
     }
@@ -32,6 +34,7 @@ extension TorrentDisk {
 private final class OwnedFiles {
     private static let queue = DispatchQueue(label: "app.torrenza.ownership", qos: .utility)
     private let root: Int32
+    private let verifiedVolumeDevice: UInt64?
 
     static func perform<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
         try Task.checkCancellation()
@@ -40,9 +43,21 @@ private final class OwnedFiles {
         }
     }
 
-    init(destination: URL) throws {
+    init(destination: URL, expectedVolumeUUID: String? = nil) throws {
         root = Darwin.open(destination.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard root >= 0 else { throw Self.failure("Open destination for ownership validation") }
+        do {
+            if let expectedVolumeUUID {
+                let current = try destination.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+                guard current == expectedVolumeUUID else { throw TorrentError.storage("The original destination volume is unavailable") }
+                var opened = stat(), currentRoot = stat()
+                guard fstat(root, &opened) == 0, lstat(destination.path, &currentRoot) == 0,
+                      opened.st_dev == currentRoot.st_dev, opened.st_ino == currentRoot.st_ino else {
+                    throw TorrentError.storage("Destination was removed or replaced")
+                }
+                verifiedVolumeDevice = UInt64(opened.st_dev)
+            } else { verifiedVolumeDevice = nil }
+        } catch { Darwin.close(root); throw error }
     }
     deinit { if root >= 0 { Darwin.close(root) } }
 
@@ -103,18 +118,23 @@ private final class OwnedFiles {
         actual.device == expected.device && actual.inode == expected.inode
     }
 
-    func validate(_ signatures: [DiskSignature], allowMissing: Bool) throws {
-        for expected in try normalized(signatures) {
+    func validate(_ signatures: [DiskSignature], allowMissing: Bool) throws -> [DiskSignature] {
+        try normalized(signatures).map { expected in
             let components = expected.path.split(separator: "/").map(String.init)
             if let actual = try signature(components) {
-                guard matches(actual, expected) else { throw TorrentError.storage("Refusing a replaced or unrelated file: \(expected.path)") }
+                // st_dev is a mount-time number, not a persistent volume identity.
+                // A UUID-verified root permits renumbering, never a changed inode
+                // or a file on a nested foreign mount.
+                let sameVolume = verifiedVolumeDevice.map { actual.device == $0 } ?? (actual.device == expected.device)
+                guard sameVolume, actual.inode == expected.inode else { throw TorrentError.storage("Refusing a replaced or unrelated file: \(expected.path)") }
+                return actual
             } else if !allowMissing { throw TorrentError.storage("Owned file is missing: \(expected.path)") }
+            return expected
         }
     }
 
     func remove(_ signatures: [DiskSignature]) throws {
-        let signatures = try normalized(signatures)
-        try validate(signatures, allowMissing: true)
+        let signatures = try validate(signatures, allowMissing: true)
         var changedParents = Set<[String]>()
         for expected in signatures {
             let components = expected.path.split(separator: "/").map(String.init)

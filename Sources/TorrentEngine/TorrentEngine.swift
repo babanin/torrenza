@@ -339,16 +339,30 @@ public actor TorrentEngine {
         guard !shuttingDown else { throw CancellationError() }
         guard !refreshingIDs.contains(id) else { throw TorrentError.storage("Wait for this torrent refresh to finish") }
         guard let session = sessions[id] else { return }
+        guard !session.busy, sessionOperationCounts[id] == nil else { throw TorrentError.storage("Wait for this torrent's current operation to finish") }
+        // Use the same exclusive reservation as refresh so mutations, scheduling,
+        // and profile shutdown cannot reopen storage during file removal.
+        refreshingIDs.insert(id)
+        session.busy = true
+        defer { session.busy = false; finishRefresh([id]) }
         sessionOperationCounts[id, default: 0] += 1
         defer { finishSessionOperation(id) }
         session.record.wantedRunning = false
         await stopSession(id, state: .paused)
         if deleteFiles {
             do {
-                try await openDisk(session)
-                try await updateOwnership(session)
-                try await TorrentDisk.removeOwnedFiles(destination: session.record.destination, signatures: session.record.ownedSignatures ?? [])
+                // Existing ownership is sufficient even if some files are now missing.
+                // Only legacy records need to recover their managed-file identities.
+                if session.record.ownedSignatures == nil {
+                    if let signatures = session.record.diskSignatures { session.record.ownedSignatures = signatures }
+                    else {
+                        try await openDisk(session)
+                        try await updateOwnership(session)
+                    }
+                }
                 await session.disk?.close()
+                session.disk = nil
+                try await TorrentDisk.removeOwnedFiles(destination: session.record.destination, signatures: session.record.ownedSignatures ?? [], expectedVolumeUUID: session.record.volumeUUID)
             } catch {
                 await quarantine(id, error: error)
                 throw error
@@ -399,7 +413,7 @@ public actor TorrentEngine {
         for file in session.record.metainfo.files where selectedFiles.contains(file.index) && !session.record.selectedFiles.contains(file.index) {
             let path = file.path.reduce(session.record.destination) { $0.appendingPathComponent($1) }
             if let owned = session.record.ownedSignatures?.first(where: { $0.path == file.path.joined(separator: "/") }) {
-                try await TorrentDisk.validateOwnedFiles(destination: session.record.destination, signatures: [owned], allowMissing: false)
+                try await TorrentDisk.validateOwnedFiles(destination: session.record.destination, signatures: [owned], allowMissing: false, expectedVolumeUUID: session.record.volumeUUID)
             } else if FileManager.default.fileExists(atPath: path.path) {
                 throw TorrentError.storage("A newly selected file already exists and is not owned by this torrent")
             }

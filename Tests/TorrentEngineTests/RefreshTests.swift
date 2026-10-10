@@ -27,6 +27,41 @@ extension EngineTests {
         try data.write(to: url)
     }
 
+    func testRestoredTorrentCanRefreshAfterVolumeDeviceRenumbering() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let payload = Data(repeating: 42, count: 32_768)
+        let old = try refreshFixture([("first.bin", payload)])
+        let fresh = try refreshFixture([("first.bin", payload), ("new.bin", payload)])
+        try refreshPayload(payload, path: "first.bin", root: root)
+        let state = root.appendingPathComponent("state")
+        let first = TorrentEngine(stateDirectory: state)
+        _ = try await first.add(metainfo: old, destination: root, selectedFiles: [0], allowExisting: true, startPaused: true)
+        try await first.shutdownForProfileSwitch()
+        let writer = EnginePersistence(directory: state)
+        let saved = try await writer.load()
+        var archive = try XCTUnwrap(saved)
+        archive.records[0].ownedSignatures = archive.records[0].ownedSignatures?.map {
+            DiskSignature(path: $0.path, device: $0.device + 1, inode: $0.inode, size: $0.size, modifiedSeconds: $0.modifiedSeconds, modifiedNanoseconds: $0.modifiedNanoseconds)
+        }
+        try await writer.save(archive)
+        try await writer.close()
+        let restored = TorrentEngine(stateDirectory: state)
+        try await restored.prepareForActivation()
+        try await restored.activatePreparedProfile()
+
+        let refreshed = try await restored.refresh(id: old.id, metainfo: fresh)
+        XCTAssertEqual(refreshed, fresh.id)
+        let snapshot = await restored.currentSnapshots().first
+        XCTAssertEqual(snapshot?.state, .paused)
+        XCTAssertEqual(snapshot?.completedBytes, 32_768)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("series/first.bin")), payload)
+        try await restored.remove(fresh.id, deleteFiles: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("series/first.bin").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("series/new.bin").path))
+        try await restored.shutdownForProfileSwitch()
+    }
+
     func testRefreshInsertionPreservesVerifiedBytesSelectionHistoryAndSourceAcrossRelaunch() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }

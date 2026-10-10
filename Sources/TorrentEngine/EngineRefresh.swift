@@ -73,7 +73,7 @@ extension TorrentEngine {
             try validateRefresh(original, id: id, generation: generation)
             let old = original.record
             let oldFiles = Dictionary(uniqueKeysWithValues: old.metainfo.files.filter { !$0.isPadding }.map { ($0.path.joined(separator: "/"), $0) })
-            let owned = old.ownedSignatures ?? []
+            var owned = old.ownedSignatures ?? []
             let ownedPaths = Set(owned.map(\.path))
             var selected: Set<Int> = []
             for file in metainfo.files where !file.isPadding {
@@ -92,7 +92,9 @@ extension TorrentEngine {
             let requiredPaths = originalSelectedPaths.union(selectedOwnedPaths)
             guard requiredPaths.isSubset(of: ownedPaths) else { throw TorrentError.storage("The original torrent's file ownership is missing") }
             if !requiredPaths.isEmpty {
-                try await TorrentDisk.validateOwnedFiles(destination: old.destination, signatures: owned.filter { requiredPaths.contains($0.path) }, allowMissing: false)
+                let current = try await TorrentDisk.validateOwnedFiles(destination: old.destination, signatures: owned.filter { requiredPaths.contains($0.path) }, allowMissing: false, expectedVolumeUUID: old.volumeUUID)
+                let rebased = Dictionary(uniqueKeysWithValues: current.map { ($0.path, $0) })
+                owned = owned.map { rebased[$0.path] ?? $0 }
             }
             try validateRefresh(original, id: id, generation: generation)
             if let expected = old.volumeUUID {
