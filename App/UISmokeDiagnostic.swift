@@ -528,8 +528,8 @@ import TorrentStorage
     }
 
     private func installDebugAddTorrent() {
-        let draft = ImportDraft(metainfo: debugVideoCollectionMetainfo(), ratio: 1)
-        draft.destination = FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-UI/Downloads", isDirectory: true)
+        uiState.lastDestinationDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-UI/Downloads", isDirectory: true)
+        let draft = makeImportDraft(metainfo: debugVideoCollectionMetainfo())
         pendingImport = draft
     }
 
@@ -545,6 +545,7 @@ import TorrentStorage
             check(false, "Synthetic import sheet is visible")
             return (passed, lines)
         }
+        check(draft.destination == uiState.lastDestinationDirectory && draft.destination != nil, "Add Torrent prefills the profile’s saved destination without a folder picker")
         check(sheet.styleMask.contains(.resizable), "Native sheet allows user resizing")
         let originalSelection = draft.selectedFiles
         let originalRatio = draft.ratio
@@ -1091,6 +1092,7 @@ import TorrentStorage
             try require(try Data(contentsOf: work.databaseURL) == closedDatabase, "Repeated shutdown does not rewrite a closed profile")
             lines.append(contentsOf: try await runFileSelectionSmoke())
             lines.append(contentsOf: try await runImportFailureSmoke())
+            lines.append(contentsOf: try await runDestinationSmoke())
             lines.append("PROFILE SMOKE PASSED")
         } catch { lines.append("PROFILE SMOKE FAILED: \(error)") }
         try? FileManager.default.createDirectory(at: reportDirectory, withIntermediateDirectories: true)

@@ -21,9 +21,10 @@ struct UIState: Codable, Equatable {
     var sortOrder: TreeSortOrder?
     // Optional so existing profile state decodes without losing saved interface preferences.
     var appearance: AppAppearance?
-    // Dialog starting locations only; choosing a folder still grants access through NSOpenPanel.
+    // Profile-local dialog locations and reusable destination access.
     var lastTorrentDirectory: URL?
     var lastDestinationDirectory: URL?
+    var lastDestinationBookmark: Data?
 }
 
 @MainActor extension AppModel {

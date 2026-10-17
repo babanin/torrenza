@@ -381,11 +381,45 @@ import UserNotifications
                 guard let self else { return }
                 self.filePickerOpen = false
                 guard response == .OK, !self.terminating, let draft, self.pendingImport === draft, let directory = panel.url else { return }
-                draft.destination = directory
-                self.uiState.lastDestinationDirectory = directory
+                self.rememberDestination(directory, for: draft)
             }
         }
     }
+    func rememberDestination(_ directory: URL, for draft: ImportDraft) {
+        guard pendingImport === draft, isProfileReady, !isSwitchingProfile, !terminating, !draft.isAdding else { return }
+        let scoped = directory.startAccessingSecurityScopedResource()
+        defer { if scoped { directory.stopAccessingSecurityScopedResource() } }
+        draft.destination = directory
+        var state = uiState
+        state.lastDestinationDirectory = directory
+        state.lastDestinationBookmark = try? directory.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+        uiState = state
+    }
+
+    /// Reuse the active profile's chosen destination without opening a folder picker.
+    /// Legacy path-only preferences still prefill; Choose renews access if macOS requires it.
+    func makeImportDraft(metainfo: TorrentMetainfo) -> ImportDraft {
+        let draft = ImportDraft(metainfo: metainfo, ratio: settings.defaultSeedRatio)
+        draft.destination = uiState.lastDestinationDirectory
+        if let bookmark = uiState.lastDestinationBookmark {
+            var stale = false
+            if let directory = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale) {
+                draft.destination = directory
+                if stale || directory != uiState.lastDestinationDirectory {
+                    let scoped = directory.startAccessingSecurityScopedResource()
+                    defer { if scoped { directory.stopAccessingSecurityScopedResource() } }
+                    var state = uiState
+                    state.lastDestinationDirectory = directory
+                    if let renewed = try? directory.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil) {
+                        state.lastDestinationBookmark = renewed
+                    }
+                    uiState = state
+                }
+            }
+        }
+        return draft
+    }
+
     func open(_ urls: [URL]) {
         let supported = urls.filter { $0.isFileURL || $0.scheme?.lowercased() == "magnet" }
         if supported.count != urls.count { error = "Open a local .torrent file or a magnet link." }
@@ -414,7 +448,7 @@ import UserNotifications
                 }
                 try Task.checkCancellation()
                 guard !terminating else { return }
-                pendingImport = ImportDraft(metainfo: meta, ratio: settings.defaultSeedRatio)
+                pendingImport = makeImportDraft(metainfo: meta)
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -674,7 +708,7 @@ import UserNotifications
         }
     }
     func refreshOperationDismissed() {
-        if let metainfo = finishedRemoteImport, !terminating { pendingImport = ImportDraft(metainfo: metainfo, ratio: settings.defaultSeedRatio) }
+        if let metainfo = finishedRemoteImport, !terminating { pendingImport = makeImportDraft(metainfo: metainfo) }
         finishedRemoteImport = nil
         processNextImport()
     }
