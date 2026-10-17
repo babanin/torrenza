@@ -16,12 +16,13 @@ struct TorrentOutlineView: NSViewRepresentable {
         outline.style = .inset; outline.rowSizeStyle = .medium; outline.usesAlternatingRowBackgroundColors = true
         outline.allowsMultipleSelection = true; outline.autosaveTableColumns = false
         outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
-        for (id, title, width) in [("name", "Name", 320.0), ("size", "Size", 90.0), ("progress", "Progress / Status", 180.0), ("download", "Download", 95.0), ("upload", "Upload", 95.0), ("uploaded", "Uploaded", 110.0), ("seeds", "Seeds", 85.0), ("peers", "Peers", 85.0)] {
+        for (id, title, width) in [("name", "Name", 320.0), ("added", "Added", 160.0), ("size", "Size", 90.0), ("progress", "Progress / Status", 180.0), ("download", "Download", 95.0), ("upload", "Upload", 95.0), ("uploaded", "Uploaded", 110.0), ("seeds", "Seeds", 85.0), ("peers", "Peers", 85.0)] {
             let column = NSTableColumn(identifier: .init(id)); column.title = title; column.width = width; column.minWidth = id == "name" ? 180 : 65
             column.sortDescriptorPrototype = NSSortDescriptor(key: id, ascending: id == "name")
             if id == "seeds" { column.headerToolTip = "Connected seeds / tracker-reported seeds. Estimates are not summed across trackers." }
             if id == "peers" { column.headerToolTip = "All connected peers, including seeds / tracker-reported total peers." }
             if id == "uploaded" { column.headerToolTip = "Total payload uploaded, including repeated uploads. * means since per-file tracking started; earlier uploads cannot be attributed to individual files." }
+            if id == "added" { column.headerToolTip = "When the torrent was added to this profile. Locations show the newest known Added date among their visible torrents. Older entries may have no recorded date." }
             let sortHelp = id == "progress" ? "Sort by completion percentage within each folder." : ["seeds", "peers"].contains(id) ? "Sort by connected count within each folder." : "Click to sort within each folder; click again to reverse."
             column.headerToolTip = [column.headerToolTip, sortHelp].compactMap { $0 }.joined(separator: " ")
             outline.addTableColumn(column)
@@ -77,7 +78,11 @@ struct TorrentOutlineView: NSViewRepresentable {
             if model.didLoadUIState && !loadedState {
                 loadedState = true; expanded = Set(model.uiState.expandedNodeIDs); selectedNodeIDs = Set(model.uiState.effectiveSelectedNodeIDs)
                 restoring = true
-                for (position, id) in model.uiState.columnOrder.enumerated() where position < outline.numberOfColumns {
+                var columnOrder = model.uiState.columnOrder
+                if !columnOrder.isEmpty && !columnOrder.contains("added") {
+                    columnOrder.insert("added", at: columnOrder.firstIndex(of: "name").map { $0 + 1 } ?? 0)
+                }
+                for (position, id) in columnOrder.enumerated() where position < outline.numberOfColumns {
                     let source = outline.column(withIdentifier: .init(id))
                     if source >= 0 && source != position { outline.moveColumn(source, toColumn: position) }
                 }
@@ -185,6 +190,15 @@ struct TorrentOutlineView: NSViewRepresentable {
             case "size":
                 if case .file(let id, let index) = node.kind, let file = model.tree.file(transferID: id, index: index) { value = byteString(file.file.length) }
                 else { value = byteString(metrics.size) }
+            case "added":
+                if let date = model.tree.addedAt(for: node) {
+                    value = date.formatted(date: .numeric, time: .shortened)
+                    tooltip = "Added to this profile: \(date.formatted(date: .complete, time: .complete))"
+                    if node.transferIDs.count > 1 { tooltip = "Newest known Added date among visible torrents: \(date.formatted(date: .complete, time: .complete))" }
+                } else {
+                    value = "—"
+                    tooltip = "No Added date was recorded for this entry."
+                }
             case "progress":
                 if let torrent {
                     let idleWithoutFiles = [.paused, .queued, .completed].contains(torrent.state)

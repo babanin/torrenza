@@ -88,7 +88,7 @@ final class EngineSession {
         fileSnapshotIndices = Dictionary(uniqueKeysWithValues: record.metainfo.files.filter { !$0.isPadding }.enumerated().map { ($0.element.index, $0.offset) })
         wanted = Self.wantedPieces(record)
         picker = PiecePickerState(count: record.metainfo.pieceHashes.count)
-        snapshot = TransferSnapshot(id: record.metainfo.id, name: record.metainfo.name, destination: record.destination, isMultiFile: record.metainfo.isMultiFile, state: record.wantedRunning ? .queued : .paused, files: record.metainfo.files.filter { !$0.isPadding }.map { FileSnapshot(file: $0, selected: record.selectedFiles.contains($0.index), uploadedBytes: record.fileUploadedBytes?[$0.index] ?? 0) }, fileUploadHistoryComplete: record.fileUploadHistoryComplete ?? false, selectedBytes: record.metainfo.files.filter { record.selectedFiles.contains($0.index) }.reduce(0) { $0 + $1.length }, downloadedBytes: record.downloaded, uploadedBytes: record.uploaded, seedRatio: record.seedRatio, trackers: record.metainfo.trackerTiers.flatMap { $0 }.map(\.absoluteString), refreshSource: record.refreshSource ?? record.metainfo.refreshSource)
+        snapshot = TransferSnapshot(id: record.metainfo.id, name: record.metainfo.name, destination: record.destination, isMultiFile: record.metainfo.isMultiFile, state: record.wantedRunning ? .queued : .paused, files: record.metainfo.files.filter { !$0.isPadding }.map { FileSnapshot(file: $0, selected: record.selectedFiles.contains($0.index), uploadedBytes: record.fileUploadedBytes?[$0.index] ?? 0) }, fileUploadHistoryComplete: record.fileUploadHistoryComplete ?? false, selectedBytes: record.metainfo.files.filter { record.selectedFiles.contains($0.index) }.reduce(0) { $0 + $1.length }, downloadedBytes: record.downloaded, uploadedBytes: record.uploaded, seedRatio: record.seedRatio, trackers: record.metainfo.trackerTiers.flatMap { $0 }.map(\.absoluteString), refreshSource: record.refreshSource ?? record.metainfo.refreshSource, addedAt: record.addedAt)
         if let error = record.quarantineError {
             snapshot.state = .failed
             snapshot.error = error
@@ -262,7 +262,7 @@ public actor TorrentEngine {
         }
         let scoped = destination.startAccessingSecurityScopedResource()
         let bookmark = try? destination.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
-        var record = EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloadedBytes, uploaded: uploadedBytes, wantedRunning: !startPaused && !selectedFiles.isEmpty, verified: PieceBitset(count: metainfo.pieceHashes.count))
+        var record = EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloadedBytes, uploaded: uploadedBytes, wantedRunning: !startPaused && !selectedFiles.isEmpty, verified: PieceBitset(count: metainfo.pieceHashes.count), addedAt: Date())
         record.volumeUUID = try? destination.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
         let session = EngineSession(record: record)
         session.securityScoped = scoped

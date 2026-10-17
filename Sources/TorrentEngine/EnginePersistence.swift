@@ -20,6 +20,7 @@ struct EngineRecord: Codable, Sendable {
     var quarantineError: String? = nil
     var verified: PieceBitset
     var refreshSource: TorrentRefreshSource? = nil
+    var addedAt: Date? = nil
 }
 
 extension EngineRecord {
@@ -83,6 +84,7 @@ private struct MutableTransferRecord: Codable, Sendable {
     var quarantineError: String? = nil
     var verified: PieceBitset
     var refreshSource: TorrentRefreshSource?
+    var addedAt: Date?
     init(_ record: EngineRecord) {
         destination = record.destination; bookmark = record.bookmark; volumeUUID = record.volumeUUID
         diskSignatures = nil; ownedSignatures = nil; selectedFiles = record.selectedFiles; seedRatio = record.seedRatio
@@ -90,9 +92,10 @@ private struct MutableTransferRecord: Codable, Sendable {
         fileUploadedBytes = record.fileUploadedBytes; fileUploadHistoryComplete = record.fileUploadHistoryComplete
         wantedRunning = record.wantedRunning; quarantineError = record.quarantineError; verified = record.verified
         refreshSource = record.refreshSource
+        addedAt = record.addedAt
     }
     func record(metainfo: TorrentMetainfo) -> EngineRecord {
-        EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, volumeUUID: volumeUUID, diskSignatures: diskSignatures, ownedSignatures: ownedSignatures, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloaded, uploaded: uploaded, fileUploadedBytes: fileUploadedBytes, fileUploadHistoryComplete: fileUploadHistoryComplete, wantedRunning: wantedRunning, quarantineError: quarantineError, verified: verified, refreshSource: refreshSource)
+        EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, volumeUUID: volumeUUID, diskSignatures: diskSignatures, ownedSignatures: ownedSignatures, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloaded, uploaded: uploaded, fileUploadedBytes: fileUploadedBytes, fileUploadHistoryComplete: fileUploadHistoryComplete, wantedRunning: wantedRunning, quarantineError: quarantineError, verified: verified, refreshSource: refreshSource, addedAt: addedAt)
     }
 }
 

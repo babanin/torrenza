@@ -189,9 +189,12 @@ public struct TransferSnapshot: Sendable, Identifiable, Equatable {
     public var trackers: [String]
     public var refreshSource: TorrentRefreshSource?
     public var progress: Double { selectedBytes > 0 ? min(1, Double(completedBytes) / Double(selectedBytes)) : 0 }
-    public init(id: String, name: String, destination: URL? = nil, isMultiFile: Bool = false, state: TransferState = .queued, files: [FileSnapshot] = [], fileUploadHistoryComplete: Bool = true, completedBytes: Int64 = 0, selectedBytes: Int64 = 0, downloadedBytes: Int64 = 0, uploadedBytes: Int64 = 0, downloadRate: Double = 0, uploadRate: Double = 0, seedRatio: Double? = 1, swarm: SwarmCounts = .init(), error: String? = nil, trackers: [String] = [], refreshSource: TorrentRefreshSource? = nil) {
+    /// When this transfer was added to this profile; nil for older saved transfers.
+    public var addedAt: Date?
+    public init(id: String, name: String, destination: URL? = nil, isMultiFile: Bool = false, state: TransferState = .queued, files: [FileSnapshot] = [], fileUploadHistoryComplete: Bool = true, completedBytes: Int64 = 0, selectedBytes: Int64 = 0, downloadedBytes: Int64 = 0, uploadedBytes: Int64 = 0, downloadRate: Double = 0, uploadRate: Double = 0, seedRatio: Double? = 1, swarm: SwarmCounts = .init(), error: String? = nil, trackers: [String] = [], refreshSource: TorrentRefreshSource? = nil, addedAt: Date? = nil) {
         self.id = id; self.name = name; self.destination = destination; self.isMultiFile = isMultiFile; self.state = state; self.files = files; self.fileUploadHistoryComplete = fileUploadHistoryComplete; self.completedBytes = completedBytes; self.selectedBytes = selectedBytes; self.downloadedBytes = downloadedBytes; self.uploadedBytes = uploadedBytes; self.downloadRate = downloadRate; self.uploadRate = uploadRate; self.seedRatio = seedRatio; self.swarm = swarm; self.error = error; self.trackers = trackers
         self.refreshSource = refreshSource
+        self.addedAt = addedAt
     }
 }
 

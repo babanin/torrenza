@@ -6,6 +6,8 @@ Torrenza organizes downloads by volume and destination folder, then expands into
 
 Click a column header to sort the items inside each folder; click again to reverse the order. Folders and torrents retain their hierarchy, and the sort choice is saved per profile. Progress sorts by completion percentage, while Seeds and Peers sort by connected counts. Selection and expanded folders remain stable as live statistics change the order.
 
+The Added column records when a torrent was imported into the current profile and defaults to newest first. Files inherit their torrent's date; location groups show the newest known date among the torrents they display. Entries imported before date tracking show “—” and sort after known dates in either direction.
+
 ## Build and run
 
 Prerequisites: Xcode 26.6 or a compatible newer Xcode, and [XcodeGen](https://github.com/yonaskolb/XcodeGen).

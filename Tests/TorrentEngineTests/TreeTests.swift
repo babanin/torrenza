@@ -202,7 +202,7 @@ import TorrentCore
             case .uploaded: transfer.uploadedBytes = 9_007_199_254_740_992 + value
             case .seeds: transfer.swarm.connectedSeeds = Int(value); transfer.swarm.reportedSeeds = Int(100 - value)
             case .peers: transfer.swarm.connectedPeers = Int(value); transfer.swarm.reportedPeers = Int(100 - value)
-            case .name: break
+            case .name, .added: break
             }
         }
         var a = torrent("a", name: "A", destination: "/Volumes/Storage")

@@ -24,7 +24,7 @@ import TorrentCore
 }
 
 public enum TreeFilter: String, CaseIterable, Sendable { case all = "All Transfers", active = "Active", downloading = "Downloading", completed = "Completed", paused = "Paused", attention = "Needs Attention" }
-public enum TreeSortColumn: String, Codable, Sendable { case name, size, progress, download, upload, uploaded, seeds, peers }
+public enum TreeSortColumn: String, Codable, Sendable { case name, size, progress, download, upload, uploaded, seeds, peers, added }
 public struct TreeSortOrder: Codable, Equatable, Sendable {
     public var column: TreeSortColumn
     public var ascending: Bool
@@ -145,6 +145,7 @@ public struct TreeMetrics: Equatable, Sendable {
     private func sortValue(for node: TorrentTreeNode, column: TreeSortColumn) -> SortValue? {
         switch column {
         case .name: return nil
+        case .added: return addedAt(for: node).map { .fraction($0.timeIntervalSince1970) }
         case .seeds, .peers:
             guard case .torrent(let id) = node.kind, let transfer = transfers[id] else { return nil }
             return .integer(Int64(column == .seeds ? transfer.swarm.connectedSeeds : transfer.swarm.connectedPeers))
@@ -191,6 +192,12 @@ public struct TreeMetrics: Equatable, Sendable {
         guard let transfer = transfers[transferID], let offset = fileOffsets[transferID]?[index],
               transfer.files.indices.contains(offset) else { return nil }
         return transfer.files[offset]
+    }
+
+    /// Files inherit their torrent's import date. Location groups show the most
+    /// recently added represented torrent, without accessing filesystem dates.
+    public func addedAt(for node: TorrentTreeNode) -> Date? {
+        node.transferIDs.compactMap { transfers[$0]?.addedAt }.max()
     }
 
     public func metrics(for node: TorrentTreeNode) -> TreeMetrics {

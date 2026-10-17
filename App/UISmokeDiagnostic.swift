@@ -35,8 +35,8 @@ import TorrentStorage
         swarm.reportedAt = .now; swarm.tracker = "https://tracker.example.test/announce"
         let files = [FileSnapshot(file: TorrentFile(index: 0, path: ["A", "Documents", "Guide.pdf"], length: 4_000_000, offset: 0), selected: true, verifiedBytes: 2_000_000, uploadedBytes: 120_000), FileSnapshot(file: TorrentFile(index: 1, path: ["A", "Archive.zip"], length: 46_000_000, offset: 4_000_000), selected: true, verifiedBytes: 19_000_000, uploadedBytes: 80_000)]
         transfers = [
-            TransferSnapshot(id: "ui-a", name: "A", destination: URL(fileURLWithPath: "/Volumes/Storage/torrents/other"), isMultiFile: true, state: .downloading, files: files, fileUploadHistoryComplete: false, completedBytes: 21_000_000, selectedBytes: 50_000_000, downloadedBytes: 21_000_000, uploadedBytes: 2_000_000, downloadRate: 4_200_000, uploadRate: 128_000, swarm: swarm, trackers: ["https://tracker.example.test/announce"]),
-            TransferSnapshot(id: "ui-b", name: "B", destination: URL(fileURLWithPath: "/Volumes/Storage/torrents/video"), isMultiFile: true, state: .seeding, files: [.init(file: .init(index: 0, path: ["B", "Movie.mp4"], length: 1_200_000_000, offset: 0), selected: true, verifiedBytes: 1_200_000_000, uploadedBytes: 720_000_000)], completedBytes: 1_200_000_000, selectedBytes: 1_200_000_000, downloadedBytes: 1_200_000_000, uploadedBytes: 720_000_000, uploadRate: 2_100_000, swarm: swarm),
+            TransferSnapshot(id: "ui-a", name: "A", destination: URL(fileURLWithPath: "/Volumes/Storage/torrents/other"), isMultiFile: true, state: .downloading, files: files, fileUploadHistoryComplete: false, completedBytes: 21_000_000, selectedBytes: 50_000_000, downloadedBytes: 21_000_000, uploadedBytes: 2_000_000, downloadRate: 4_200_000, uploadRate: 128_000, swarm: swarm, trackers: ["https://tracker.example.test/announce"], addedAt: Date(timeIntervalSince1970: 1_700_000_000)),
+            TransferSnapshot(id: "ui-b", name: "B", destination: URL(fileURLWithPath: "/Volumes/Storage/torrents/video"), isMultiFile: true, state: .seeding, files: [.init(file: .init(index: 0, path: ["B", "Movie.mp4"], length: 1_200_000_000, offset: 0), selected: true, verifiedBytes: 1_200_000_000, uploadedBytes: 720_000_000)], completedBytes: 1_200_000_000, selectedBytes: 1_200_000_000, downloadedBytes: 1_200_000_000, uploadedBytes: 720_000_000, uploadRate: 2_100_000, swarm: swarm, addedAt: Date(timeIntervalSince1970: 1_600_000_000)),
             TransferSnapshot(id: "ui-offline", name: "Linux.iso", destination: URL(fileURLWithPath: "/Volumes/Backup"), state: .unavailable, selectedBytes: 4_000_000_000, error: "Connect Backup to resume this download.")
         ]
         if fileBadges {
@@ -617,7 +617,7 @@ import TorrentStorage
             Set(outline.selectedRowIndexes.compactMap { (outline.item(atRow: $0) as? TorrentTreeNode)?.id })
         }
         func settle() async { try? await Task.sleep(for: .milliseconds(120)) }
-        let columns: [TreeSortColumn] = [.name, .size, .progress, .download, .upload, .uploaded, .seeds, .peers]
+        let columns: [TreeSortColumn] = [.name, .size, .progress, .download, .upload, .uploaded, .seeds, .peers, .added]
         for column in columns {
             let prototype = outline.tableColumns.first { $0.identifier.rawValue == column.rawValue }?.sortDescriptorPrototype
             check(prototype?.key == column.rawValue, "\(column.rawValue) header has a matching native sort prototype")
@@ -688,6 +688,41 @@ import TorrentStorage
         await settle()
         checkOrder(["Documents", "Archive.zip"], "Restored fixture values restore their sorted order")
         checkPreserved()
+        if let addedColumn = outline.tableColumns.first(where: { $0.identifier.rawValue == "added" }),
+           let locations = visibleNodes().first(where: { $0.url?.path == "/Volumes/Storage/torrents" }),
+           let other = visibleNodes().first(where: { $0.url?.path == "/Volumes/Storage/torrents/other" }),
+           let video = visibleNodes().first(where: { $0.url?.path == "/Volumes/Storage/torrents/video" }),
+           let legacyTorrent = visibleNodes().first(where: { $0.id == "torrent:ui-offline" }),
+           let expectedDate = transfers[transferIndex].addedAt {
+            check(addedColumn.title == "Added" && addedColumn.sortDescriptorPrototype?.ascending == false,
+                  "Added header defaults to newest first")
+            func checkAddedCell(_ node: TorrentTreeNode, expected: String, description: String) {
+                let cell = coordinator.outlineView(outline, viewFor: addedColumn, item: node) as? NSTableCellView
+                check(cell?.textField?.stringValue == expected, description)
+                check(cell?.toolTip?.isEmpty == false, "Added cell explains its date scope")
+            }
+            let expectedText = expectedDate.formatted(date: .numeric, time: .shortened)
+            checkAddedCell(torrent, expected: expectedText, description: "Added renders the torrent import date using the current locale")
+            checkAddedCell(guide, expected: expectedText, description: "Files display their torrent import date")
+            checkAddedCell(locations, expected: expectedText, description: "Location groups display their newest represented import date")
+            checkAddedCell(legacyTorrent, expected: "—", description: "Legacy torrents without an import date display an em dash")
+            for ascending in [true, false] {
+                await setSort(.added, ascending: ascending)
+                check(tree.children(of: locations).map(\.id) == (ascending ? [video.id, other.id] : [other.id, video.id]),
+                      "Added \(ascending ? "ascending" : "descending") orders location siblings chronologically")
+                let first = ascending ? video : other
+                let second = ascending ? other : video
+                check(outline.row(forItem: first) >= 0 && outline.row(forItem: first) < outline.row(forItem: second),
+                      "Native outline displays the chronological Added order")
+                check(outline.parent(forItem: other) as? TorrentTreeNode === locations
+                      && outline.parent(forItem: video) as? TorrentTreeNode === locations,
+                      "Added sorting preserves filesystem-location grouping")
+                checkOrder(["Archive.zip", "Documents"], "Equal import dates use deterministic name order within the torrent")
+                checkPreserved()
+            }
+        } else {
+            check(false, "Added column and dated location fixtures are available")
+        }
         do {
             var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(uiState)) as! [String: Any]
             legacy.removeValue(forKey: "sortOrder")
@@ -702,6 +737,26 @@ import TorrentStorage
                 }
             }
         } catch { check(false, "Sort preference serialization: \(error.localizedDescription)") }
+        let savedUIState = uiState
+        let savedColumnOrder = outline.tableColumns.map { $0.identifier.rawValue }
+        let legacyColumnOrder = savedColumnOrder.filter { $0 != "added" }
+        coordinator.restoring = true
+        outline.moveColumn(outline.column(withIdentifier: .init("added")), toColumn: outline.numberOfColumns - 1)
+        coordinator.restoring = false
+        uiState.columnOrder = legacyColumnOrder
+        uiState.expandedNodeIDs = coordinator.expanded.sorted()
+        uiState.hasSavedExpansion = true
+        uiState.selectedNodeIDs = selected.sorted()
+        coordinator.loadedState = false
+        coordinator.refresh(model: self)
+        await settle()
+        let restoredColumnOrder = outline.tableColumns.map { $0.identifier.rawValue }
+        var expectedColumnOrder = legacyColumnOrder
+        expectedColumnOrder.insert("added", at: legacyColumnOrder.firstIndex(of: "name").map { $0 + 1 } ?? 0)
+        check(restoredColumnOrder == expectedColumnOrder,
+              "Legacy saved column order inserts Added after Name and preserves all existing column positions relative to each other")
+        checkPreserved()
+        uiState = savedUIState
         outline.window?.makeFirstResponder(outline)
         return (passed, lines)
     }
@@ -1026,7 +1081,7 @@ import TorrentStorage
             let workTorrentDirectory = work.directory.appendingPathComponent("Torrent Files", isDirectory: true)
             let workDestinationDirectory = work.directory.appendingPathComponent("Downloads", isDirectory: true)
             settings.maxDownloads = 1; saveSettings(); filter = .paused
-            uiState.sortOrder = TreeSortOrder(column: .size, ascending: true)
+            uiState.sortOrder = TreeSortOrder(column: .added, ascending: false)
             uiState.lastTorrentDirectory = workTorrentDirectory
             uiState.lastDestinationDirectory = workDestinationDirectory
             await waitForProfileWork()
@@ -1042,7 +1097,7 @@ import TorrentStorage
             profileEditor = nil; profileEditorError = nil
             switchProfile(work); await waitForProfileWork()
             try require(settings.maxDownloads == 1 && filter == .paused, "Second profile retains its own values")
-            try require(uiState.sortOrder == TreeSortOrder(column: .size, ascending: true), "Second profile retains its own column sort")
+            try require(uiState.sortOrder == TreeSortOrder(column: .added, ascending: false), "Second profile retains its own column sort")
             try require(uiState.lastTorrentDirectory == workTorrentDirectory && uiState.lastDestinationDirectory == workDestinationDirectory, "Second profile retains its own distinct dialog directories")
             beginRenameProfile(); profileName = "Research"; submitProfile(); await waitForProfileWork()
             try require(activeProfile?.id == work.id && activeProfile?.name == "Research", "Rename preserves database identity")
@@ -1084,7 +1139,7 @@ import TorrentStorage
             reopened.launch(); await reopened.waitForProfileWork()
             try require(reopened.activeProfile?.id == work.id && reopened.activeProfile?.name == "Research", "Relaunch restores the last selected profile and name")
             try require(reopened.settings.maxDownloads == 1 && reopened.filter == .paused, "Relaunch restores profile settings")
-            try require(reopened.uiState.sortOrder == TreeSortOrder(column: .size, ascending: true), "Relaunch restores the profile column sort from SQLite")
+            try require(reopened.uiState.sortOrder == TreeSortOrder(column: .added, ascending: false), "Relaunch restores the profile column sort from SQLite")
             try require(reopened.uiState.lastTorrentDirectory == workTorrentDirectory && reopened.uiState.lastDestinationDirectory == workDestinationDirectory, "Relaunch restores both saved dialog directories")
             await reopened.shutdown()
             let closedDatabase = try Data(contentsOf: work.databaseURL)
