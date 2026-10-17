@@ -40,6 +40,10 @@ enum TorrentRefreshFetchError: Error, LocalizedError {
     @ObservationIgnored private var timeoutTask: Task<Void, Never>?
     @ObservationIgnored private var activeDownload: WKDownload?
     @ObservationIgnored private var activeNavigation: WKNavigation?
+    @ObservationIgnored private var isDownloadHandoff = false
+#if DEBUG
+    @ObservationIgnored private var browserFixtureURL: URL?
+#endif
     @ObservationIgnored private var progressObservations: [NSKeyValueObservation] = []
     @ObservationIgnored private var temporaryDirectory: URL?
     @ObservationIgnored private var downloadURL: URL?
@@ -125,6 +129,18 @@ enum TorrentRefreshFetchError: Error, LocalizedError {
         finish(.failure(CancellationError()))
     }
 
+#if DEBUG
+    /// Exercises the WebKit path against an isolated loopback server, without account cookies.
+    func fetchBrowserFixture(url: URL) async throws -> Data {
+        guard !isFetching else { throw TorrentRefreshFetchError.busy }
+        guard websiteDataStore.isPersistent == false, url.scheme == "http", url.host == "127.0.0.1",
+              url.port != nil, Self.validHTTPURL(url) else { throw TorrentRefreshFetchError.invalidURL }
+        browserFixtureURL = url
+        defer { browserFixtureURL = nil }
+        return try await fetch(source: .ruTracker(topicID: "1", host: "rutracker.org"))
+    }
+#endif
+
     func signOut() async {
         cancel()
         await websiteDataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
@@ -147,6 +163,7 @@ enum TorrentRefreshFetchError: Error, LocalizedError {
     private func startRuTrackerDownload() {
         guard let source, case .ruTracker(let topicID, let host) = source, continuation != nil else { return }
         redirectCount = 0
+        isDownloadHandoff = false
         status = "Fetching updated torrent…"
         startTimeout()
         var components = URLComponents()
@@ -156,6 +173,9 @@ enum TorrentRefreshFetchError: Error, LocalizedError {
         components.queryItems = [URLQueryItem(name: "t", value: topicID)]
         guard let url = components.url else { finish(.failure(TorrentRefreshFetchError.invalidURL)); return }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
+#if DEBUG
+        if let browserFixtureURL { request.url = browserFixtureURL }
+#endif
         request.setValue(source.url.absoluteString, forHTTPHeaderField: "Referer")
         activeNavigation = webView.load(request)
     }
@@ -188,6 +208,7 @@ enum TorrentRefreshFetchError: Error, LocalizedError {
     }
 
     private func cleanupDownload() {
+        isDownloadHandoff = false
         progressObservations.removeAll()
         let download = activeDownload
         activeDownload = nil
@@ -235,6 +256,16 @@ enum TorrentRefreshFetchError: Error, LocalizedError {
         return host == "rutracker.org" || host == "rutracker.net" || host.hasSuffix(".rutracker.org") || host.hasSuffix(".rutracker.net")
     }
 
+    private func allowedBrowserURL(_ url: URL?) -> Bool {
+#if DEBUG
+        if let fixture = browserFixtureURL {
+            guard let url, Self.validHTTPURL(url) else { return false }
+            return url.scheme == fixture.scheme && url.host == fixture.host && url.port == fixture.port
+        }
+#endif
+        return Self.ruTrackerURL(url)
+    }
+
     private nonisolated static func fetchDirect(_ url: URL) async throws -> Data {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
@@ -274,7 +305,7 @@ extension TorrentRefreshFetcher: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         guard continuation != nil else { decisionHandler(.cancel); return }
         if navigationAction.targetFrame?.isMainFrame == true {
-            guard Self.ruTrackerURL(navigationAction.request.url) else { decisionHandler(.cancel); return }
+            guard allowedBrowserURL(navigationAction.request.url) else { decisionHandler(.cancel); return }
         }
         // Captcha resources and challenge frames may come from separate provider origins.
         guard navigationAction.targetFrame != nil else { decisionHandler(.cancel); return }
@@ -284,7 +315,7 @@ extension TorrentRefreshFetcher: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
         guard continuation != nil else { decisionHandler(.cancel); return }
         guard navigationResponse.isForMainFrame else { decisionHandler(.allow); return }
-        guard Self.ruTrackerURL(navigationResponse.response.url) else {
+        guard allowedBrowserURL(navigationResponse.response.url) else {
             decisionHandler(.cancel)
             finish(.failure(TorrentRefreshFetchError.invalidURL))
             return
@@ -309,6 +340,9 @@ extension TorrentRefreshFetcher: WKNavigationDelegate {
             decisionHandler(.cancel)
             finish(.failure(TorrentRefreshFetchError.tooLarge))
         } else {
+            // WebKit may report policy interruption before delivering didBecome download.
+            // Record the handoff before invoking its decision handler.
+            isDownloadHandoff = true
             decisionHandler(.download)
         }
     }
@@ -325,7 +359,12 @@ extension TorrentRefreshFetcher: WKNavigationDelegate {
     }
 
     private func navigationFailed(_ navigation: WKNavigation?, error: any Error) {
-        guard navigation === activeNavigation, (error as NSError).code != NSURLErrorCancelled else { return }
+        guard let navigation, navigation === activeNavigation else { return }
+        let failure = error as NSError
+        if failure.domain == NSURLErrorDomain && failure.code == NSURLErrorCancelled { return }
+        // A response becoming a download interrupts its frame load by policy. The
+        // download delegate and timeout remain responsible for success or failure.
+        if isDownloadHandoff && failure.domain == "WebKitErrorDomain" && failure.code == 102 { return }
         finish(.failure(error))
     }
 }
@@ -370,7 +409,7 @@ extension TorrentRefreshFetcher: WKDownloadDelegate {
 
     func download(_ download: WKDownload, willPerformHTTPRedirection response: HTTPURLResponse, newRequest: URLRequest, decisionHandler: @escaping @MainActor @Sendable (WKDownload.RedirectPolicy) -> Void) {
         redirectCount += 1
-        guard download === activeDownload, continuation != nil, redirectCount <= 5, Self.ruTrackerURL(newRequest.url) else {
+        guard download === activeDownload, continuation != nil, redirectCount <= 5, allowedBrowserURL(newRequest.url) else {
             decisionHandler(.cancel)
             finish(.failure(redirectCount > 5 ? TorrentRefreshFetchError.tooManyRedirects : TorrentRefreshFetchError.invalidURL))
             return

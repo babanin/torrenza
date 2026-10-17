@@ -169,6 +169,46 @@ import WebKit
             }
             try require(!fetcher.isFetching && !fetcher.isAuthenticationRequired, "Cancellation clears fetching and authentication state")
             try require(try await fetch("valid") == original, "A fresh request succeeds after cancellation")
+            func fetchBrowser(_ path: String) async throws -> Data {
+                try await fetcher.fetchBrowserFixture(url: server.url(path))
+            }
+            let browserData = try await fetchBrowser("valid")
+            try require(browserData == original && (try MetainfoParser.parse(browserData)).totalLength == 4,
+                        "WebKit navigation converts to a download and returns valid torrent metadata")
+            try require(try await fetchBrowser("attachment") == original,
+                        "WebKit attachment download succeeds when the fetcher is reused")
+            try require(try await fetchBrowser("redirect") == original,
+                        "WebKit redirect reaches a valid torrent download")
+            do {
+                _ = try await fetchBrowser("large-header")
+                throw RefreshSmokeFailure(message: "WebKit accepted an oversized response")
+            } catch TorrentRefreshFetchError.tooLarge {
+                try require(true, "WebKit rejects an oversized declared response")
+            }
+            var interruptedDownloadError: (any Error)?
+            do { _ = try await fetchBrowser("truncated") }
+            catch { interruptedDownloadError = error }
+            try require(interruptedDownloadError != nil,
+                        "A genuine interrupted WebKit download fails instead of returning partial metadata")
+            try require(!fetcher.isFetching && !fetcher.isAuthenticationRequired,
+                        "WebKit download failure clears fetching and authentication state")
+            let browserLogin = Task { try await fetchBrowser("html") }
+            let loginDeadline = Date().addingTimeInterval(5)
+            while !fetcher.isAuthenticationRequired && Date() < loginDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let showedAuthentication = fetcher.isFetching && fetcher.isAuthenticationRequired
+            browserLogin.cancel()
+            var loginCancellationError: (any Error)?
+            do { _ = try await browserLogin.value }
+            catch { loginCancellationError = error }
+            try require(showedAuthentication, "WebKit HTML response opens authentication state")
+            try require(loginCancellationError is CancellationError || (loginCancellationError as? URLError)?.code == .cancelled,
+                        "Cancelling WebKit authentication terminates the pending fetch")
+            try require(!fetcher.isFetching && !fetcher.isAuthenticationRequired,
+                        "Cancelling WebKit authentication clears fetching and authentication state")
+            try require(try await fetchBrowser("valid") == original,
+                        "A fresh WebKit download succeeds after authentication cancellation")
             let pipelineRoot = report.appendingPathComponent(UUID().uuidString, isDirectory: true)
             let preferencesName = "dev.torrenza.refresh-fetch-smoke.\(UUID().uuidString)"
             guard let preferences = UserDefaults(suiteName: preferencesName) else { throw RefreshSmokeFailure(message: "Could not create isolated preferences") }
@@ -313,6 +353,12 @@ private struct RefreshSmokeFailure: Error { let message: String }
         var headers = "Content-Type: application/x-bittorrent\r\n"
         var body = payload
         switch path {
+        case "/attachment":
+            headers += "Content-Disposition: attachment; filename=fixture.torrent\r\n"
+        case "/truncated":
+            let response = Data("HTTP/1.1 200 OK\r\nContent-Type: application/x-bittorrent\r\nContent-Length: \(payload.count + 1024)\r\nConnection: close\r\n\r\n".utf8) + payload.prefix(8)
+            send(connection, id: id, data: response)
+            return
         case "/updated":
             if var root = try? Bencode.decode(payload).dictionaryValue, var info = root["info"]?.dictionaryValue {
                 info["revision"] = .integer(1)
