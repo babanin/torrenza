@@ -25,6 +25,14 @@ import UserNotifications
     @ObservationIgnored private var shutdownTask: Task<Void, Never>?
     @ObservationIgnored private var profileTask: Task<Void, Never>?
     @ObservationIgnored private var operations: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var transferActionTails: [String: Task<Void, Never>] = [:]
+    private var pendingTransferActions: [String: Int] = [:]
+    private struct FileSelectionChange {
+        let token: UUID
+        let indices: Set<Int>
+        let selected: Bool
+    }
+    private var pendingFileChanges: [String: [FileSelectionChange]] = [:]
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var scheduledRefresh: (source: TorrentRefreshSource, id: String, name: String)?
     private var filePickerOpen = false
@@ -192,9 +200,11 @@ import UserNotifications
     private func observe(_ target: TorrentEngine) {
         observation?.cancel()
         observation = Task {
-            for await updates in await target.snapshots() {
+            for await _ in await target.snapshots() {
                 guard !Task.isCancelled, engine === target else { break }
                 let sessionStatistics = await target.statistics()
+                // Read after the suspension so an older stream event cannot undo a completed file action.
+                let updates = await target.currentSnapshots()
                 guard !Task.isCancelled, engine === target else { break }
                 for transfer in updates {
                     if notificationsEnabled, let old = previousStates[transfer.id], [.downloading, .checking].contains(old), [.seeding, .completed].contains(transfer.state) {
@@ -445,17 +455,91 @@ import UserNotifications
         qbittorrentImport = nil
     }
     func qbittorrentImportDismissed() { processNextImport() }
-    func startSelection() { guard canOperateTransfers else { return }; let ids = selectedIDs; perform { engine in for id in ids { await engine.start(id) } } }
-    func pauseSelection() { guard canOperateTransfers else { return }; let ids = selectedIDs; perform { engine in for id in ids { await engine.pause(id) } } }
-    func recheckSelection() { guard canOperateTransfers else { return }; let ids = selectedIDs; perform { engine in for id in ids { await engine.recheck(id) } } }
-    func removeSelection() {
+    var actionTargets: [String: TransferActionTarget] {
+        TorrentTreeActions.resolve(selectedNodes, transfers: transfers)
+    }
+    var canActOnSelection: Bool { canOperateTransfers && !actionTargets.isEmpty }
+    private var selectionHasFiles: Bool { actionTargets.values.contains { if case .files = $0 { return true }; return false } }
+    private var selectionHasTorrents: Bool { actionTargets.values.contains(.torrent) }
+    var startSelectionTitle: String { selectionHasFiles ? (selectionHasTorrents ? "Start Transfers / Download Files" : "Download") : "Start" }
+    var pauseSelectionTitle: String { selectionHasFiles ? (selectionHasTorrents ? "Pause Transfers / Stop Downloading Files" : "Stop Downloading") : "Pause" }
+    var startSelectionHelp: String { selectionHasFiles ? "Enable selected files and all files in selected torrent folders, including search-hidden files; start all enabled files. Whole-torrent selections start those transfers." : "Start selected transfers" }
+    var pauseSelectionHelp: String { selectionHasFiles ? "Disable selected files and all files in selected torrent folders, including search-hidden files. Keep downloaded data. Whole-torrent selections pause those transfers." : "Pause selected transfers" }
+    var canRecheckSelection: Bool { canOperateTransfers && !selectedIDs.isEmpty && selectedIDs.allSatisfy { pendingTransferActions[$0] == nil } }
+    var canRemoveSelection: Bool { canRecheckSelection }
+
+    /// Queue at input time, before asynchronous tasks can observe stale selection snapshots.
+    private func enqueueTransferAction(_ id: String, change: (indices: Set<Int>, selected: Bool)? = nil,
+                                       operation: @escaping @MainActor (TorrentEngine) async throws -> Void) {
         guard canOperateTransfers else { return }
-        let ids = selectedIDs, delete = deleteFiles
-        perform { [self] engine in
-            do { for id in ids { try await engine.remove(id, deleteFiles: delete) } }
+        let target = engine, token = UUID(), predecessor = transferActionTails[id]
+        if let change { pendingFileChanges[id, default: []].append(.init(token: token, indices: change.indices, selected: change.selected)) }
+        pendingTransferActions[id, default: 0] += 1
+        operationCount += 1
+        let task = Task { [self] in
+            await predecessor?.value
+            do { try await operation(target) }
             catch { self.error = error.localizedDescription }
+            let snapshots = await target.currentSnapshots()
+            if engine === target { transfers = snapshots }
+            pendingFileChanges[id]?.removeAll { $0.token == token }
+            if pendingFileChanges[id]?.isEmpty == true { pendingFileChanges[id] = nil }
+            let remaining = (pendingTransferActions[id] ?? 1) - 1
+            if remaining == 0 { pendingTransferActions[id] = nil; transferActionTails[id] = nil }
+            else { pendingTransferActions[id] = remaining }
+            operations[token] = nil
+            operationCount -= 1
         }
+        transferActionTails[id] = task
+        operations[token] = task
+    }
+    private func applySelectionAction(start: Bool) {
+        guard canActOnSelection else { return }
+        for (id, target) in actionTargets {
+            switch target {
+            case .torrent:
+                enqueueTransferAction(id) { engine in
+                    if start { await engine.start(id) } else { await engine.pause(id) }
+                }
+            case .files(let indices): enqueueFileChange(id, indices: indices, selected: start)
+            }
+        }
+    }
+    private func enqueueFileChange(_ id: String, indices: Set<Int>, selected: Bool) {
+        guard !indices.isEmpty else { return }
+        enqueueTransferAction(id, change: (indices, selected)) { engine in
+            try await engine.setFilesSelected(id, indices: indices, selected: selected, startWhenSelected: true)
+        }
+    }
+    func startSelection() { applySelectionAction(start: true) }
+    func pauseSelection() { applySelectionAction(start: false) }
+    func recheckSelection() {
+        guard canRecheckSelection else { return }
+        for id in selectedIDs { enqueueTransferAction(id) { await $0.recheck(id) } }
+    }
+    func removeSelection() {
+        guard canRemoveSelection else { return }
+        let delete = deleteFiles
+        for id in selectedIDs { enqueueTransferAction(id) { try await $0.remove(id, deleteFiles: delete) } }
         confirmRemoval = false; deleteFiles = false
+    }
+    func isFileSelected(_ index: Int, transfer: TransferSnapshot) -> Bool {
+        pendingFileChanges[transfer.id]?.last(where: { $0.indices.contains(index) })?.selected
+            ?? transfer.files.first(where: { $0.id == index })?.selected ?? false
+    }
+    func fileSelectionState(for node: TorrentTreeNode) -> NSControl.StateValue? {
+        guard let target = TorrentTreeActions.fileSelection(for: node, transfers: transfers),
+              let transfer = transfers.first(where: { $0.id == target.id }), !target.indices.isEmpty else { return nil }
+        let selected = target.indices.filter { isFileSelected($0, transfer: transfer) }.count
+        return selected == 0 ? .off : selected == target.indices.count ? .on : .mixed
+    }
+    func isFileSelectionPending(for node: TorrentTreeNode) -> Bool {
+        node.transferIDs.contains { pendingTransferActions[$0] != nil }
+    }
+    func setFilesSelected(for nodes: [TorrentTreeNode], selected: Bool) {
+        for (id, target) in TorrentTreeActions.resolve(nodes, transfers: transfers) {
+            if case .files(let indices) = target { enqueueFileChange(id, indices: indices, selected: selected) }
+        }
     }
     func revealSelection() {
         let urls = selectedURLs
@@ -467,10 +551,9 @@ import UserNotifications
     }
     func setFile(_ index: Int, selected: Bool, transfer: TransferSnapshot) {
         guard canOperateTransfers else { return }
-        var selectedFiles = Set(transfer.files.filter(\.selected).map(\.id))
-        if selected { selectedFiles.insert(index) } else { selectedFiles.remove(index) }
-        perform { [self] engine in do { try await engine.setSelectedFiles(transfer.id, selectedFiles: selectedFiles) } catch { self.error = error.localizedDescription } }
+        enqueueFileChange(transfer.id, indices: [index], selected: selected)
     }
+
     func setRatio(_ ratio: Double?, transfer: TransferSnapshot) { guard canOperateTransfers else { return }; perform { engine in await engine.setSeedRatio(transfer.id, ratio: ratio) } }
     func openTorrentURL() {
         guard canOpenTorrentURL else { return }
@@ -639,6 +722,15 @@ import UserNotifications
         if isProfileReady { await engine.shutdown() }
     }
     #if DEBUG
+    func setDebugFileSelectionPending(_ pending: Bool, transferID: String) {
+        let wasPending = pendingTransferActions[transferID] != nil
+        if pending != wasPending { operationCount += pending ? 1 : -1 }
+        pendingTransferActions[transferID] = pending ? 1 : nil
+    }
+    func setDebugFileSelection(indices: Set<Int>, selected: Bool, transferID: String) {
+        pendingFileChanges[transferID, default: []].append(.init(token: UUID(), indices: indices, selected: selected))
+    }
+    func clearDebugFileSelection(transferID: String) { pendingFileChanges[transferID] = nil }
     func waitForProfileWork() async {
         await profileTask?.value
         for operation in Array(operations.values) { await operation.value }

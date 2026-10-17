@@ -173,6 +173,10 @@ public actor TorrentEngine {
     var resolutionTasks: [UUID: Task<TorrentMetainfo, Error>] = [:]
     var refreshingIDs: Set<String> = []
     var sessionOperationCounts: [String: Int] = [:]
+    var sessionOperationWaiters: [CheckedContinuation<Void, Never>] = []
+    var actionGateHeld: Set<String> = []
+    var actionGateWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    var selectionUpdatingIDs: Set<String> = []
     var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     var saveGateHeld = false
     var saveGateWaiters: [CheckedContinuation<Void, Never>] = []
@@ -311,8 +315,15 @@ public actor TorrentEngine {
         guard let session = sessions[id] else { return }
         sessionOperationCounts[id, default: 0] += 1
         defer { finishSessionOperation(id) }
+        await acquireActionGate(id)
+        defer { releaseActionGate(id) }
+        guard !shuttingDown else { return }
+        await startSessionAction(id, session: session)
+    }
+
+    private func startSessionAction(_ id: String, session: EngineSession) async {
         guard !session.record.selectedFiles.isEmpty else {
-            await pause(id)
+            await pauseSessionAction(id, session: session)
             return
         }
         session.record.wantedRunning = true
@@ -329,6 +340,13 @@ public actor TorrentEngine {
         guard let session = sessions[id] else { return }
         sessionOperationCounts[id, default: 0] += 1
         defer { finishSessionOperation(id) }
+        await acquireActionGate(id)
+        defer { releaseActionGate(id) }
+        guard !shuttingDown else { return }
+        await pauseSessionAction(id, session: session)
+    }
+
+    private func pauseSessionAction(_ id: String, session: EngineSession) async {
         session.record.wantedRunning = false
         await stopSession(id, state: session.record.quarantineError == nil ? .paused : .failed)
         try? await checkpoint()
@@ -375,14 +393,17 @@ public actor TorrentEngine {
     }
 
     public func recheck(_ id: String) async {
-        guard !shuttingDown, !refreshingIDs.contains(id) else { return }
+        guard !shuttingDown, !refreshingIDs.contains(id), sessionOperationCounts[id] == nil else { return }
         guard let session = sessions[id] else { return }
         sessionOperationCounts[id, default: 0] += 1
         defer { finishSessionOperation(id) }
+        await acquireActionGate(id)
+        defer { releaseActionGate(id) }
+        guard !shuttingDown else { return }
         session.record.quarantineError = nil
         session.snapshot.error = nil
         guard !session.record.selectedFiles.isEmpty else {
-            await pause(id)
+            await pauseSessionAction(id, session: session)
             return
         }
         await stopSession(id, state: .checking)
@@ -402,23 +423,51 @@ public actor TorrentEngine {
         try? await checkpoint()
     }
 
+    /// Replaces the selection, preserving the torrent's current running intent.
     public func setSelectedFiles(_ id: String, selectedFiles: Set<Int>) async throws {
+        try await changeFileSelection(id, replacement: selectedFiles, indices: [], selected: false, startWhenSelected: false)
+    }
+
+    /// Applies a delta to the authoritative selection after earlier actions finish.
+    /// Enabling a file can start all enabled files; disabling the last file pauses.
+    public func setFilesSelected(_ id: String, indices: Set<Int>, selected: Bool, startWhenSelected: Bool = true) async throws {
+        try await changeFileSelection(id, replacement: nil, indices: indices, selected: selected, startWhenSelected: startWhenSelected && selected && !indices.isEmpty)
+    }
+
+    private func changeFileSelection(_ id: String, replacement: Set<Int>?, indices: Set<Int>, selected: Bool, startWhenSelected: Bool) async throws {
         guard !shuttingDown else { throw CancellationError() }
         guard !refreshingIDs.contains(id) else { throw TorrentError.storage("Wait for this torrent refresh to finish") }
         guard let session = sessions[id] else { return }
         sessionOperationCounts[id, default: 0] += 1
         defer { finishSessionOperation(id) }
+        await acquireActionGate(id)
+        defer { releaseActionGate(id) }
+        guard !shuttingDown else { throw CancellationError() }
+        let valid = Set(session.record.metainfo.files.filter { !$0.isPadding }.map(\.index))
+        guard indices.isSubset(of: valid) else { throw TorrentError.storage("Invalid file selection") }
+        let selectedFiles = replacement ?? (selected ? session.record.selectedFiles.union(indices) : session.record.selectedFiles.subtracting(indices))
+        try await applyFileSelection(id, session: session, selectedFiles: selectedFiles, startWhenSelected: startWhenSelected)
+    }
+
+    private func applyFileSelection(_ id: String, session: EngineSession, selectedFiles: Set<Int>, startWhenSelected: Bool) async throws {
         let valid = Set(session.record.metainfo.files.filter { !$0.isPadding }.map(\.index))
         guard selectedFiles.isSubset(of: valid) else { throw TorrentError.storage("Invalid file selection") }
-        for file in session.record.metainfo.files where selectedFiles.contains(file.index) && !session.record.selectedFiles.contains(file.index) {
-            let path = file.path.reduce(session.record.destination) { $0.appendingPathComponent($1) }
-            if let owned = session.record.ownedSignatures?.first(where: { $0.path == file.path.joined(separator: "/") }) {
-                try await TorrentDisk.validateOwnedFiles(destination: session.record.destination, signatures: [owned], allowMissing: false, expectedVolumeUUID: session.record.volumeUUID)
-            } else if FileManager.default.fileExists(atPath: path.path) {
-                throw TorrentError.storage("A newly selected file already exists and is not owned by this torrent")
-            }
+        if let error = session.record.quarantineError { throw TorrentError.storage(error) }
+        if selectedFiles == session.record.selectedFiles {
+            if startWhenSelected && !selectedFiles.isEmpty { await startSessionAction(id, session: session) }
+            return
         }
+        selectionUpdatingIDs.insert(id)
+        defer { selectionUpdatingIDs.remove(id) }
         do {
+            for file in session.record.metainfo.files where selectedFiles.contains(file.index) && !session.record.selectedFiles.contains(file.index) {
+                let path = file.path.reduce(session.record.destination) { $0.appendingPathComponent($1) }
+                if let owned = session.record.ownedSignatures?.first(where: { $0.path == file.path.joined(separator: "/") }) {
+                    try await TorrentDisk.validateOwnedFiles(destination: session.record.destination, signatures: [owned], allowMissing: false, expectedVolumeUUID: session.record.volumeUUID)
+                } else if FileManager.default.fileExists(atPath: path.path) {
+                    throw TorrentError.storage("A newly selected file already exists and is not owned by this torrent")
+                }
+            }
             await stopSession(id, state: .paused)
             // The current selection must still exist before adding new files;
             // only newly selected payloads may be created below.
@@ -439,10 +488,16 @@ public actor TorrentEngine {
             if let error = session.record.quarantineError {
                 session.snapshot.state = .failed
                 session.snapshot.error = error
+                throw TorrentError.storage(error)
             } else if ![.failed, .unavailable].contains(session.snapshot.state) {
                 session.snapshot.state = session.record.wantedRunning ? .queued : .paused
             }
+            if startWhenSelected && !selectedFiles.isEmpty {
+                session.record.wantedRunning = true
+                session.snapshot.state = .queued
+            }
             try await checkpoint()
+            selectionUpdatingIDs.remove(id)
             await schedule()
         } catch {
             await quarantine(id, error: error)
@@ -625,6 +680,11 @@ public actor TorrentEngine {
         let resolutions = Array(resolutionTasks.values)
         for task in resolutions { task.cancel() }
         for task in backgroundTasks.values { task.cancel() }
+        // Public actions hold this count while queued and while doing disk I/O.
+        // Drain them before closing sessions or saving a clean profile checkpoint.
+        if !sessionOperationCounts.isEmpty {
+            await withCheckedContinuation { sessionOperationWaiters.append($0) }
+        }
         for id in Array(sessions.keys) { await stopSession(id, state: .paused) }
         await dht?.stop()
         for task in resolutions { _ = try? await task.value }

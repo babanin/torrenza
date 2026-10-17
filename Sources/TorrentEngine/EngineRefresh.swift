@@ -203,6 +203,25 @@ extension TorrentEngine {
         guard let count = sessionOperationCounts[id] else { return }
         if count == 1 { sessionOperationCounts.removeValue(forKey: id) }
         else { sessionOperationCounts[id] = count - 1 }
+        if sessionOperationCounts.isEmpty {
+            let waiters = sessionOperationWaiters
+            sessionOperationWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
+    }
+
+    func acquireActionGate(_ id: String) async {
+        if actionGateHeld.contains(id) {
+            await withCheckedContinuation { actionGateWaiters[id, default: []].append($0) }
+        } else { actionGateHeld.insert(id) }
+    }
+
+    func releaseActionGate(_ id: String) {
+        if var waiters = actionGateWaiters[id], !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            actionGateWaiters[id] = waiters.isEmpty ? nil : waiters
+            next.resume()
+        } else { actionGateHeld.remove(id) }
     }
 
     func acquireSaveGate() async {

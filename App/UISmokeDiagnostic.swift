@@ -18,6 +18,7 @@ import TorrentStorage
         let addTorrent = arguments.contains("--ui-add-torrent")
         let multiselect = arguments.contains("--ui-multiselect-check")
         let sortCheck = arguments.contains("--ui-sort-check")
+        let fileSelectionCheck = arguments.contains("--ui-file-selection-check")
         let refreshProgress = arguments.contains("--ui-refresh-progress")
         let refreshResultCapture = arguments.contains("--ui-refresh-result")
         let refreshSelection = arguments.contains("--ui-refresh-selection")
@@ -96,6 +97,14 @@ import TorrentStorage
                     sortResult = (false, ["FAIL: Sorting check: Torrent outline was not found"])
                 }
             }
+            var fileSelectionResult: (passed: Bool, lines: [String]) = (true, [])
+            if fileSelectionCheck {
+                if let outline = findOutline(view) {
+                    fileSelectionResult = await checkDebugFileSelection(outline: outline)
+                } else {
+                    fileSelectionResult = (false, ["FAIL: File selection check: Torrent outline was not found"])
+                }
+            }
             let importChecksPassed = !qbImport || installDebugQBittorrentImport()
             if addTorrent { installDebugAddTorrent() }
             var refreshResult: (passed: Bool, lines: [String]) = (true, [])
@@ -117,12 +126,13 @@ import TorrentStorage
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-UI", isDirectory: true)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let refreshSuffix = refreshSelection ? "-refresh-selection" : refreshResultCapture ? "-refresh-result" : refreshProgress ? "-refresh-progress" : refreshCheck ? "-refresh" : ""
-            let basename = "ui-smoke-\(dark ? "dark" : "light")\(narrow ? "-narrow" : wide ? "-wide" : "")\(longProfile ? "-long-profile" : "")\(fileBadges ? "-file-badges" : "")\(qbImport ? "-qb-import" : "")\(addTorrent ? "-add-torrent" : "")\(arguments.contains("--ui-qb-skip-verification") ? "-unchecked" : "")\(multiselect ? "-multiselect" : "")\(sortCheck ? "-sort" : "")\(refreshSuffix)"
+            let basename = "ui-smoke-\(dark ? "dark" : "light")\(narrow ? "-narrow" : wide ? "-wide" : "")\(longProfile ? "-long-profile" : "")\(fileBadges ? "-file-badges" : "")\(qbImport ? "-qb-import" : "")\(addTorrent ? "-add-torrent" : "")\(arguments.contains("--ui-qb-skip-verification") ? "-unchecked" : "")\(multiselect ? "-multiselect" : "")\(sortCheck ? "-sort" : "")\(fileSelectionCheck ? "-file-selection" : "")\(refreshSuffix)"
             let output = directory.appendingPathComponent(basename + ".png")
             try? png.write(to: output, options: .atomic)
             var geometry = ["Window content size: \(view.bounds.size)", "Profile name: \(fixtureName)", "Toolbar item count: \(window.toolbar?.items.count ?? 0)"]
             geometry.append(contentsOf: multiselectResult.lines)
             geometry.append(contentsOf: sortResult.lines)
+            geometry.append(contentsOf: fileSelectionResult.lines)
             geometry.append(contentsOf: addTorrentResult.lines)
             geometry.append(contentsOf: refreshResult.lines)
             @MainActor func describe(_ node: NSView) -> String {
@@ -207,9 +217,144 @@ import TorrentStorage
             try? geometry.joined(separator: "\n").write(to: directory.appendingPathComponent(basename + ".txt"), atomically: true, encoding: .utf8)
             let importSheetVisible = !qbImport || window.attachedSheet != nil
             if qbImport { print("\(importSheetVisible ? "PASS" : "FAIL"): qBittorrent import sheet is visible") }
-            captured = searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed && sortResult.passed && uploadChecksPassed && addTorrentResult.passed && refreshResult.passed
+            captured = searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed && sortResult.passed && fileSelectionResult.passed && uploadChecksPassed && addTorrentResult.passed && refreshResult.passed
             print("UI snapshot: \(output.path)")
         }
+    }
+
+    /// Exercise native controls with synthetic snapshots; captured actions never reach the engine.
+    private func checkDebugFileSelection(outline: NSOutlineView) async -> (passed: Bool, lines: [String]) {
+        var passed = true
+        var lines: [String] = []
+        func check(_ condition: Bool, _ message: String) {
+            let line = "\(condition ? "PASS" : "FAIL"): File selection check: \(message)"
+            lines.append(line); print(line)
+            if !condition { passed = false }
+        }
+        guard let coordinator = outline.delegate as? TorrentOutlineView.Coordinator,
+              let nameColumn = outline.tableColumns.first(where: { $0.identifier.rawValue == "name" }),
+              let progressColumn = outline.tableColumns.first(where: { $0.identifier.rawValue == "progress" }),
+              let fixtureIndex = transfers.firstIndex(where: { $0.id == "ui-a" }) else {
+            check(false, "Native outline and standard fixture are available")
+            return (passed, lines)
+        }
+        let originalTransfers = transfers
+        let originalSearch = search
+        let originalSelection = coordinator.selectedNodeIDs
+        defer {
+            coordinator.debugFileSelectionAction = nil
+            setDebugFileSelectionPending(false, transferID: "ui-a")
+            clearDebugFileSelection(transferID: "ui-a")
+            transfers = originalTransfers; search = originalSearch
+            coordinator.selectedNodeIDs = originalSelection
+            coordinator.refresh(model: self)
+            outline.expandItem(nil, expandChildren: true)
+        }
+        transfers[fixtureIndex].files.append(.init(file: .init(index: 2, path: ["A", "Documents", "Hidden.txt"], length: 100, offset: 50_000_000), selected: false, verifiedBytes: 0))
+        transfers.append(.init(id: "ui-single-selection", name: "Single.txt", destination: URL(fileURLWithPath: "/Volumes/Storage/torrents/other"), state: .paused,
+                               files: [.init(file: .init(index: 0, path: ["Single.txt"], length: 10, offset: 0), selected: false, verifiedBytes: 0)]))
+        func refresh() {
+            coordinator.refresh(model: self)
+            outline.expandItem(nil, expandChildren: true)
+        }
+        func nodes() -> [TorrentTreeNode] {
+            (0..<outline.numberOfRows).compactMap { outline.item(atRow: $0) as? TorrentTreeNode }
+        }
+        func cell(_ node: TorrentTreeNode, column: NSTableColumn) -> NSTableCellView? {
+            coordinator.outlineView(outline, viewFor: column, item: node) as? NSTableCellView
+        }
+        func checkbox(_ node: TorrentTreeNode) -> NSButton? {
+            cell(node, column: nameColumn)?.subviews.compactMap { $0 as? NSButton }.first
+        }
+        func select(_ selected: [TorrentTreeNode]) {
+            outline.selectRowIndexes(IndexSet(selected.map { outline.row(forItem: $0) }.filter { $0 >= 0 }), byExtendingSelection: false)
+        }
+        refresh()
+        guard let torrent = nodes().first(where: { $0.id == "torrent:ui-a" }),
+              let folder = nodes().first(where: { $0.id == "contents:ui-a:Documents" }),
+              let file = nodes().first(where: { $0.id == "file:ui-a:0" }),
+              let single = nodes().first(where: { $0.id == "torrent:ui-single-selection" }),
+              let location = nodes().first(where: { $0.kind == .folder && $0.fileIndices == nil && $0.transferIDs.contains("ui-a") }) else {
+            check(false, "Fixture has file, internal folder, single-file torrent, and location rows")
+            return (passed, lines)
+        }
+        check(checkbox(file)?.state == .on && checkbox(folder)?.state == .mixed && checkbox(single)?.state == .off,
+              "Files, mixed folders, and single-file torrent rows expose native checkbox states")
+        check(checkbox(torrent)?.isHidden == true && checkbox(location)?.isHidden == true,
+              "Multifile torrent and filesystem-location rows retain torrent-wide controls")
+        let folderButton = checkbox(folder)
+        lines.append("Folder checkbox accessibility: role=\(folderButton?.accessibilityRole()?.rawValue ?? "nil"), label=\(folderButton?.accessibilityLabel() ?? "nil"), valueDescription=\(folderButton?.accessibilityValueDescription() ?? "nil")")
+        check(folderButton?.accessibilityRole() == .checkBox && folderButton?.accessibilityLabel()?.contains("Documents") == true
+              && folderButton?.accessibilityValueDescription() == "Some files enabled",
+              "Folder checkbox has a native accessible role, name, and mixed-state description")
+        check(folderButton?.toolTip?.contains("including files hidden by search") == true,
+              "Folder control explains that hidden descendants are included")
+        check(cell(single, column: progressColumn)?.textField?.stringValue == "No files selected",
+              "An idle single-file torrent with an empty selection explains its status")
+        select([file, folder])
+        let selectionBeforeClick = Set(selectedNodes.map(\.id))
+        let expandedBeforeClick = outline.isItemExpanded(folder)
+        var recorded: [(ids: [String], selected: Bool)] = []
+        coordinator.debugFileSelectionAction = { rows, selected in
+            recorded.append((rows.map(\.id), selected))
+        }
+        folderButton?.performClick(nil)
+        folderButton?.performClick(nil)
+        folderButton?.performClick(nil)
+        check(recorded.map(\.selected) == [true, false, true] && recorded.allSatisfy { $0.ids == [folder.id] },
+              "A mixed-folder click enables all files; rapid native clicks preserve explicit on/off intents")
+        check(Set(selectedNodes.map(\.id)) == selectionBeforeClick && outline.isItemExpanded(folder) == expandedBeforeClick,
+              "Checkbox clicks preserve native multiselection and expansion")
+        coordinator.debugFileSelectionAction = nil
+        let menu = NSMenu(); menu.autoenablesItems = false
+        coordinator.updateContextMenu(menu, row: outline.row(forItem: folder))
+        check(menu.items.first(where: { $0.title == "Download" })?.isEnabled == true
+              && menu.items.first(where: { $0.title == "Stop Downloading" })?.isEnabled == true
+              && actionTargets["ui-a"] == .files([0, 2]),
+              "File/folder context actions deduplicate overlapping multiselection")
+        select([torrent, folder])
+        check(startSelectionTitle == "Start" && pauseSelectionTitle == "Pause" && actionTargets["ui-a"] == .torrent,
+              "A selected whole torrent takes precedence over its descendants")
+        select([file, single])
+        check(actionTargets.count == 2 && startSelectionTitle == "Download" && pauseSelectionTitle == "Stop Downloading",
+              "File actions span multiple torrents with explicit Download and Stop Downloading labels")
+        select([location])
+        check(startSelectionTitle == "Start" && pauseSelectionTitle == "Pause", "Filesystem-location selections keep torrent-wide Start and Pause")
+
+        setDebugFileSelection(indices: [2], selected: true, transferID: "ui-a")
+        setDebugFileSelectionPending(true, transferID: "ui-a")
+        check(checkbox(folder)?.state == .on && checkbox(folder)?.isEnabled == true
+              && checkbox(folder)?.accessibilityHelp()?.contains("Updating file selection") == true,
+              "Pending changes update checkbox state immediately and allow consecutive changes")
+        check(isFileSelected(2, transfer: transfers[fixtureIndex]), "The Files inspector reads the same pending selection projection")
+        select([torrent])
+        coordinator.updateContextMenu(menu, row: outline.row(forItem: torrent))
+        check(!canRecheckSelection && !canRemoveSelection && !canRefreshSelection
+              && menu.items.first(where: { $0.title == "Recheck" })?.isEnabled == false
+              && menu.items.first(where: { $0.title == "Remove…" })?.isEnabled == false,
+              "Pending selection work prevents conflicting Recheck, Refresh, and Remove")
+        setDebugFileSelectionPending(false, transferID: "ui-a")
+        clearDebugFileSelection(transferID: "ui-a")
+        check(checkbox(folder)?.state == .mixed, "Clearing a failed pending projection restores the authoritative selection")
+        transfers[fixtureIndex].state = .failed
+        transfers[fixtureIndex].error = "Owned file was replaced."
+        refresh()
+        check(cell(torrent, column: progressColumn)?.toolTip == "Owned file was replaced." && checkbox(folder)?.state == .mixed,
+              "Failure remains visible and does not silently alter enabled files")
+        transfers[fixtureIndex].state = .downloading
+        transfers[fixtureIndex].error = nil
+        search = "Guide"
+        refresh()
+        if let filteredFolder = nodes().first(where: { $0.id == folder.id }) {
+            check(filteredFolder.fileIndices == [0] && fileSelectionState(for: filteredFolder) == .mixed
+                  && TorrentTreeActions.fileSelection(for: filteredFolder, transfers: transfers)?.indices == [0, 2],
+                  "Search-hidden descendants participate in folder state and action scope")
+        } else { check(false, "Search keeps the matching file's ancestor folder") }
+        search = ""; refresh()
+        select([file])
+        outline.window?.makeFirstResponder(outline)
+        try? await Task.sleep(for: .milliseconds(100))
+        return (passed, lines)
     }
 
     /// Uses native menu construction and synthetic rows without fetching metadata or opening a real profile.
@@ -617,8 +762,19 @@ import TorrentStorage
         select([parent.id, downloading.id, leaf.id])
         check(selectedIDs == parent.transferIDs, "Overlapping folder, torrent, and payload selections deduplicate action IDs")
 
-        outline.window?.makeFirstResponder(outline)
+        // A second installed instance can own the key window when this fixture launches.
+        // Establish the normal keyboard responder chain before exercising the app action.
+        NSApp.activate()
+        outline.window?.makeKeyAndOrderFront(nil)
+        await settle()
+        let acceptedFirstResponder = outline.window?.makeFirstResponder(outline) == true
+        await settle()
+        let selectAllTarget = NSApp.target(forAction: #selector(NSText.selectAll(_:)), to: nil, from: nil)
+        lines.append("Select All responder: active=\(NSApp.isActive), keyWindow=\(NSApp.keyWindow === outline.window), accepted=\(acceptedFirstResponder), firstResponder=\(String(describing: outline.window?.firstResponder)), target=\(String(describing: selectAllTarget)), rows=\(outline.numberOfRows)")
+        check(acceptedFirstResponder && outline.window?.firstResponder === outline && NSApp.keyWindow === outline.window,
+              "Native outline owns the key-window keyboard responder before Select All")
         let selectAllSent = NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
+        lines.append("Select All dispatch: sent=\(selectAllSent), nativeSelected=\(outline.selectedRowIndexes.count), modelSelected=\(selectedNodes.count), visibleRows=\(outline.numberOfRows)")
         check(selectAllSent && outline.selectedRowIndexes.count == outline.numberOfRows && selectedNodes.count == outline.numberOfRows, "Native Select All selects every visible row and updates the model")
         check(selectedIDs == Set(transfers.filter { $0.state != .resolving }.map(\.id)), "Select All deduplicates ancestor and descendant torrent targets")
 
@@ -928,6 +1084,7 @@ import TorrentStorage
             let closedDatabase = try Data(contentsOf: work.databaseURL)
             await shutdown()
             try require(try Data(contentsOf: work.databaseURL) == closedDatabase, "Repeated shutdown does not rewrite a closed profile")
+            lines.append(contentsOf: try await runFileSelectionSmoke())
             lines.append("PROFILE SMOKE PASSED")
         } catch { lines.append("PROFILE SMOKE FAILED: \(error)") }
         try? FileManager.default.createDirectory(at: reportDirectory, withIntermediateDirectories: true)

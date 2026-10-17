@@ -88,12 +88,12 @@ struct ContentView: View {
             }
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItemGroup(placement: .primaryAction) {
-                Button(action: model.startSelection) { Label("Start", systemImage: "play") }
-                    .help("Start selected transfers")
-                    .disabled(model.selectedIDs.isEmpty || !model.canOperateTransfers)
-                Button(action: model.pauseSelection) { Label("Pause", systemImage: "pause") }
-                    .help("Pause selected transfers")
-                    .disabled(model.selectedIDs.isEmpty || !model.canOperateTransfers)
+                Button(action: model.startSelection) { Label(model.startSelectionTitle, systemImage: "play") }
+                    .help(model.startSelectionHelp)
+                    .disabled(!model.canActOnSelection)
+                Button(action: model.pauseSelection) { Label(model.pauseSelectionTitle, systemImage: "pause") }
+                    .help(model.pauseSelectionHelp)
+                    .disabled(!model.canActOnSelection)
             }
             ToolbarItem(id: "transfer-search", placement: .primaryAction) {
                 ToolbarSearchField(text: $model.search, focusRequest: model.searchFocusRequest)
@@ -252,7 +252,7 @@ struct AddTorrentView: View {
             }.frame(minHeight: 180, idealHeight: 280, maxHeight: .infinity).border(.quaternary)
             HStack { Button("Select All") { draft.selectedFiles = Set(draft.metainfo.files.filter { !$0.isPadding }.map(\.index)) }; Button("Select None") { draft.selectedFiles = [] }; Spacer(); Text(byteString(draft.metainfo.files.filter { draft.selectedFiles.contains($0.index) }.reduce(0) { $0 + $1.length })).foregroundStyle(.secondary) }
             if draft.selectedFiles.isEmpty {
-                Text("No files selected. This torrent will be added paused.").font(.caption).foregroundStyle(.secondary)
+                Text("Add without downloading. Choose files in the main list when ready.").font(.caption).foregroundStyle(.secondary)
             }
             Form {
                 TextField("Refresh source URL (optional)", text: $draft.sourceText).textFieldStyle(.roundedBorder)
@@ -281,13 +281,15 @@ struct TransferInspector: View {
                 Picker("Inspector", selection: $tab) { Text("Details").tag("Details"); Text("Files").tag("Files"); Text("Trackers").tag("Trackers") }.pickerStyle(.segmented)
                 if tab == "Files" {
                     List(transfer.files.filter { !$0.file.isPadding }) { file in
-                        Toggle(isOn: Binding(get: { file.selected }, set: { model.setFile(file.id, selected: $0, transfer: transfer) })) {
+                        Toggle(isOn: Binding(get: { model.isFileSelected(file.id, transfer: transfer) }, set: { model.setFile(file.id, selected: $0, transfer: transfer) })) {
                             VStack(alignment: .leading) {
                                 Text(file.file.path.joined(separator: "/")).lineLimit(2).truncationMode(.middle)
                                 Text("\(byteString(file.verifiedBytes)) of \(byteString(file.file.length))").font(.caption).foregroundStyle(.secondary)
                                 Text("Uploaded: \(byteString(file.uploadedBytes))\(transfer.fileUploadHistoryComplete ? "" : " since tracking started")").font(.caption).foregroundStyle(.secondary)
                             }
                         }
+                        .disabled(!model.canOperateTransfers)
+                        .help("Enable this file and start all enabled files. Disable to stop downloading it and retain existing data.")
                     }
                     if !transfer.fileUploadHistoryComplete {
                         Text("Earlier uploads are included in the torrent total, but their per-file breakdown is unavailable.").font(.caption).foregroundStyle(.secondary)
@@ -297,7 +299,7 @@ struct TransferInspector: View {
                     if transfer.trackers.isEmpty { Text("No trackers supplied.").foregroundStyle(.secondary) }
                 } else {
                     Form {
-                        LabeledContent("Status", value: transfer.state.rawValue.capitalized)
+                        LabeledContent("Status", value: transfer.state == .paused && !transfer.files.contains(where: \.selected) ? "No files selected" : transfer.state.rawValue.capitalized)
                         LabeledContent("Progress", value: "\(Int(transfer.progress * 100))%")
                         LabeledContent("Downloaded", value: byteString(transfer.downloadedBytes))
                         LabeledContent("Uploaded", value: byteString(transfer.uploadedBytes))

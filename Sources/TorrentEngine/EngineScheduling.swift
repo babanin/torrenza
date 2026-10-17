@@ -89,7 +89,7 @@ extension TorrentEngine {
         await schedule()
     }
 
-    func currentSnapshots() -> [TransferSnapshot] {
+    public func currentSnapshots() -> [TransferSnapshot] {
         (sessions.values.map(\.snapshot) + Array(resolving.values) + (libraryError.map { [$0] } ?? [])).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
@@ -182,7 +182,7 @@ extension TorrentEngine {
         var downloads = 0, seeds = 0
         var hddVolumes: Set<String> = []
         for id in sessions.keys.sorted() {
-            guard let session = sessions[id], session.record.wantedRunning, !session.busy, session.record.quarantineError == nil,
+            guard let session = sessions[id], !selectionUpdatingIDs.contains(id), session.record.wantedRunning, !session.busy, session.record.quarantineError == nil,
                   !session.record.selectedFiles.isEmpty,
                   ![.failed, .unavailable, .checking].contains(session.snapshot.state) else { continue }
             if session.selectedComplete && session.ratioReached {

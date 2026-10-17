@@ -29,14 +29,14 @@ import SwiftUI
                 ProfileMenuItems(model: model).disabled(!model.canSwitchProfile)
             }
             CommandMenu("Transfer") {
-                Button("Start") { model.startSelection() }.disabled(model.selectedIDs.isEmpty || !model.canOperateTransfers).keyboardShortcut("r")
-                Button("Pause") { model.pauseSelection() }.disabled(model.selectedIDs.isEmpty || !model.canOperateTransfers).keyboardShortcut("p")
-                Button("Recheck") { model.recheckSelection() }.disabled(model.selectedIDs.isEmpty || !model.canOperateTransfers)
+                Button(model.startSelectionTitle) { model.startSelection() }.disabled(!model.canActOnSelection).keyboardShortcut("r")
+                Button(model.pauseSelectionTitle) { model.pauseSelection() }.disabled(!model.canActOnSelection).keyboardShortcut("p")
+                Button("Recheck") { model.recheckSelection() }.disabled(!model.canRecheckSelection)
                 Button("Refresh Torrent", action: model.beginRefreshSelection).disabled(!model.canRefreshSelection)
                 Button("Edit Refresh Source…", action: model.editRefreshSourceSelection).disabled(!model.canRefreshSelection)
                 Divider()
                 Button("Reveal in Finder") { model.revealSelection() }.disabled(model.selectedURLs.isEmpty).keyboardShortcut("r", modifiers: [.command, .shift])
-                Button("Remove…") { model.confirmRemoval = true }.disabled(model.selectedIDs.isEmpty || !model.canOperateTransfers).keyboardShortcut(.delete, modifiers: .command)
+                Button("Remove…") { model.confirmRemoval = true }.disabled(!model.canRemoveSelection).keyboardShortcut(.delete, modifiers: .command)
             }
             CommandGroup(after: .toolbar) { Button("Toggle Inspector") { model.showInspector.toggle() }.keyboardShortcut("i", modifiers: [.command, .option]) }
         }

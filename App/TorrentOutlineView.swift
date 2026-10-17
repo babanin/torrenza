@@ -47,6 +47,9 @@ struct TorrentOutlineView: NSViewRepresentable {
         var loadedState = false
         var restoring = false
         var filtering = false
+        #if DEBUG
+        var debugFileSelectionAction: (([TorrentTreeNode], Bool) -> Void)?
+        #endif
         private let fileIcons: NSCache<NSString, NSImage> = {
             let cache = NSCache<NSString, NSImage>()
             cache.countLimit = 256
@@ -160,7 +163,8 @@ struct TorrentOutlineView: NSViewRepresentable {
                 cell.addSubview(text); cell.textField = text
                 if cellID.rawValue == "name" {
                     let icon = NSImageView(); icon.translatesAutoresizingMaskIntoConstraints = false; cell.addSubview(icon); cell.imageView = icon
-                    NSLayoutConstraint.activate([icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2), icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16), text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6)])
+                    NSLayoutConstraint.activate([icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16), text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6)])
+                    (cell as? TorrentNameCellView)?.installSelectionControl(relativeTo: icon)
                     (cell as? TorrentNameCellView)?.installBadge(relativeTo: icon)
                 } else { text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4).isActive = true; text.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular) }
                 NSLayoutConstraint.activate([text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
@@ -176,12 +180,18 @@ struct TorrentOutlineView: NSViewRepresentable {
                 cell.imageView?.image = icon(for: node, torrent: torrent)
                 let badgeState = torrent?.isMultiFile == false ? torrent?.state : nil
                 (cell as? TorrentNameCellView)?.setTransferState(badgeState)
+                configureSelectionControl(in: cell, for: node)
                 if let badgeState { tooltip = "Single-file torrent · \(badgeState.rawValue.capitalized)\n\(tooltip ?? node.name)" }
             case "size":
                 if case .file(let id, let index) = node.kind, let file = model.tree.file(transferID: id, index: index) { value = byteString(file.file.length) }
                 else { value = byteString(metrics.size) }
             case "progress":
-                if let torrent { value = "\(torrent.state.rawValue.capitalized) · \(Int(torrent.progress * 100))%"; tooltip = torrent.error }
+                if let torrent {
+                    let idleWithoutFiles = [.paused, .queued, .completed].contains(torrent.state)
+                        && !torrent.files.isEmpty && !torrent.files.contains { $0.selected && !$0.file.isPadding }
+                    value = idleWithoutFiles ? "No files selected" : "\(torrent.state.rawValue.capitalized) · \(Int(torrent.progress * 100))%"
+                    tooltip = torrent.error
+                }
                 else if unavailable { value = "Unavailable"; tooltip = "Reconnect the destination volume, then choose Resume or Recheck for the affected torrents." }
                 else if case .file(let id, let index) = node.kind, let file = model.tree.file(transferID: id, index: index), !file.selected { value = "Skipped" }
                 else { value = "\(Int(metrics.progress * 100))%" }
@@ -209,6 +219,39 @@ struct TorrentOutlineView: NSViewRepresentable {
             cell.setAccessibilityLabel("\(column.title): \(value)")
             cell.setAccessibilityHelp(tooltip)
             return cell
+        }
+        private func configureSelectionControl(in cell: NSTableCellView, for node: TorrentTreeNode) {
+            guard let cell = cell as? TorrentNameCellView else { return }
+            let state = model.fileSelectionState(for: node)
+            cell.setSelectionControlVisible(state != nil)
+            let checkbox = cell.selectionCheckbox
+            checkbox.node = state == nil ? nil : node
+            checkbox.target = self
+            checkbox.action = #selector(toggleFiles(_:))
+            checkbox.renderedState = state ?? .off
+            checkbox.state = state ?? .off
+            checkbox.isEnabled = state != nil && canInteract && model.canOperateTransfers
+            checkbox.identifier = .init("file-selection:\(node.id)")
+            let folder = node.kind == .folder
+            let stateDescription = state == .mixed ? "Some files enabled" : state == .on ? "Enabled for download" : "Not enabled for download"
+            let pending = model.isFileSelectionPending(for: node)
+            let scope = folder ? "Applies to all files in this folder, including files hidden by search." : "Applies to this file."
+            let help = "\(scope) Enable to start all enabled files in this torrent. Disable to stop downloading and retain existing data.\(pending ? " Updating file selection…" : "")"
+            checkbox.toolTip = help
+            checkbox.setAccessibilityLabel("Download \(folder ? "folder" : "file") \(node.name)")
+            checkbox.setAccessibilityValueDescription(stateDescription + (pending ? ". Updating file selection" : ""))
+            checkbox.setAccessibilityHelp(help)
+        }
+        @objc private func toggleFiles(_ checkbox: TorrentFileSelectionButton) {
+            guard canInteract, model.canOperateTransfers, let node = checkbox.node else { return }
+            // AppKit's mixed-state cycle may produce Off. A mixed folder always selects all.
+            let selected = checkbox.renderedState != .on
+            checkbox.renderedState = selected ? .on : .off
+            checkbox.state = checkbox.renderedState
+            #if DEBUG
+            if let debugFileSelectionAction { debugFileSelectionAction([node], selected); return }
+            #endif
+            model.setFilesSelected(for: [node], selected: selected)
         }
         private func icon(for node: TorrentTreeNode, torrent: TransferSnapshot?) -> NSImage? {
             let symbol: String
@@ -281,17 +324,21 @@ struct TorrentOutlineView: NSViewRepresentable {
             menu.removeAllItems()
             guard canInteract, outline != nil else { return }
             guard prepareContextSelection(row: row) else { return }
-            for (title, action) in [("Start", #selector(start)), ("Pause", #selector(pause)), ("Recheck", #selector(recheck)), ("Reveal in Finder", #selector(reveal)), ("Remove…", #selector(remove))] {
-                let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
-                item.isEnabled = title == "Reveal in Finder" ? !model.selectedURLs.isEmpty : !model.selectedIDs.isEmpty && model.canOperateTransfers
+            func add(_ title: String, _ action: Selector, enabled: Bool, help: String? = nil) {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                item.target = self; item.isEnabled = enabled; item.toolTip = help
+                menu.addItem(item)
             }
-            menu.insertItem(.separator(), at: 3)
-            for (offset, entry) in [("Refresh Torrent", #selector(refreshTorrent)), ("Edit Refresh Source…", #selector(editRefreshSource))].enumerated() {
-                let item = NSMenuItem(title: entry.0, action: entry.1, keyEquivalent: "")
-                item.target = self; item.isEnabled = model.canRefreshSelection
-                menu.insertItem(item, at: 4 + offset)
+            add(model.startSelectionTitle, #selector(start), enabled: model.canActOnSelection, help: model.startSelectionHelp)
+            add(model.pauseSelectionTitle, #selector(pause), enabled: model.canActOnSelection, help: model.pauseSelectionHelp)
+            add("Recheck", #selector(recheck), enabled: model.canRecheckSelection)
+            menu.addItem(.separator())
+            for entry in [("Refresh Torrent", #selector(refreshTorrent)), ("Edit Refresh Source…", #selector(editRefreshSource))] {
+                add(entry.0, entry.1, enabled: model.canRefreshSelection)
             }
-            menu.insertItem(.separator(), at: 6)
+            menu.addItem(.separator())
+            add("Reveal in Finder", #selector(reveal), enabled: !model.selectedURLs.isEmpty)
+            add("Remove…", #selector(remove), enabled: model.canRemoveSelection)
         }
         @discardableResult func prepareContextSelection(row: Int) -> Bool {
             guard canInteract, let outline, row >= 0, row < outline.numberOfRows else { return false }
@@ -306,7 +353,7 @@ struct TorrentOutlineView: NSViewRepresentable {
         @objc func refreshTorrent() { guard canInteract else { return }; model.beginRefreshSelection() }
         @objc func editRefreshSource() { guard canInteract else { return }; model.editRefreshSourceSelection() }
         @objc func reveal() { guard canInteract else { return }; model.revealSelection() }
-        @objc func remove() { guard canInteract else { return }; model.confirmRemoval = true }
+        @objc func remove() { guard canInteract, model.canRemoveSelection else { return }; model.confirmRemoval = true }
     }
 }
 
@@ -314,6 +361,29 @@ struct TorrentOutlineView: NSViewRepresentable {
 private final class TorrentNameCellView: NSTableCellView {
     private let statusBadge = NSImageView()
     private var displayedState: TransferState?
+    let selectionCheckbox = TorrentFileSelectionButton(checkboxWithTitle: "", target: nil, action: nil)
+    private var iconLeading: NSLayoutConstraint?
+
+    func installSelectionControl(relativeTo icon: NSImageView) {
+        selectionCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        selectionCheckbox.allowsMixedState = true
+        selectionCheckbox.controlSize = .small
+        selectionCheckbox.setAccessibilityRole(.checkBox)
+        selectionCheckbox.setContentHuggingPriority(.required, for: .horizontal)
+        addSubview(selectionCheckbox)
+        NSLayoutConstraint.activate([
+            selectionCheckbox.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            selectionCheckbox.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+        iconLeading = icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24)
+        iconLeading?.isActive = true
+    }
+
+    func setSelectionControlVisible(_ visible: Bool) {
+        selectionCheckbox.isHidden = !visible
+        selectionCheckbox.setAccessibilityElement(visible)
+        iconLeading?.constant = visible ? 24 : 2
+    }
 
     func installBadge(relativeTo icon: NSImageView) {
         statusBadge.translatesAutoresizingMaskIntoConstraints = false
@@ -357,4 +427,10 @@ private final class TorrentNameCellView: NSTableCellView {
             .withSymbolConfiguration(.init(pointSize: 6, weight: .bold))
         statusBadge.layer?.backgroundColor = color.cgColor
     }
+}
+
+/// Keep the stable row target and displayed state on the control, never a recycled row number.
+private final class TorrentFileSelectionButton: NSButton {
+    var node: TorrentTreeNode?
+    var renderedState: NSControl.StateValue = .off
 }

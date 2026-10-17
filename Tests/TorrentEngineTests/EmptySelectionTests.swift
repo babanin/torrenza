@@ -106,7 +106,8 @@ extension EngineTests {
             } catch { }
             let snapshots = await engine.currentSnapshots()
             let snapshot = try XCTUnwrap(snapshots.first)
-            XCTAssertEqual(snapshot.state, .paused)
+            XCTAssertEqual(snapshot.state, .failed)
+            XCTAssertNotNil(snapshot.error)
             XCTAssertTrue(snapshot.files.allSatisfy { !$0.selected })
             if replace { XCTAssertEqual(try Data(contentsOf: payload), replacement) }
             else { XCTAssertFalse(FileManager.default.fileExists(atPath: payload.path)) }
