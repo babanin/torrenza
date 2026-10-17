@@ -10,6 +10,7 @@
 		004A9AACA3913E13066B10F8 /* QBittorrentImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD67FCA33EF6DF3F51EAA479 /* QBittorrentImportView.swift */; };
 		0B4C6AAD134994529BF5B37F /* RuTrackerLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A660D6B059380F35BD414C5 /* RuTrackerLoginView.swift */; };
 		0C9A3B01997414B686FFEAAF /* TorrenzaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FD023AE4DE259EE7DB6066 /* TorrenzaApp.swift */; };
+		14C9DC4440F34369DA07A0D5 /* ImportSmokeDiagnostic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0A4B68008D8C2B7CF39536 /* ImportSmokeDiagnostic.swift */; };
 		15E510228C56F31EB118EBBA /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 048C42F93FC101967D9300AD /* ContentView.swift */; };
 		1B02FD79FB6093C292A46E28 /* ToolbarSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A7791A028569491691DB579 /* ToolbarSearchField.swift */; };
 		2DD4336AEBD56803612C6050 /* UIState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0CD872AC480845DFA9A31F0 /* UIState.swift */; };
@@ -34,6 +35,7 @@
 		40684BF63C5476AC99B09853 /* TorrentRefreshFetcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TorrentRefreshFetcher.swift; sourceTree = "<group>"; };
 		4F06B0C08C777F5B932DE7F0 /* RefreshFetchSmokeDiagnostic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RefreshFetchSmokeDiagnostic.swift; sourceTree = "<group>"; };
 		5A660D6B059380F35BD414C5 /* RuTrackerLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuTrackerLoginView.swift; sourceTree = "<group>"; };
+		8B0A4B68008D8C2B7CF39536 /* ImportSmokeDiagnostic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportSmokeDiagnostic.swift; sourceTree = "<group>"; };
 		94EB84A07336E24F1644CA69 /* TorrentRefreshView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TorrentRefreshView.swift; sourceTree = "<group>"; };
 		A72E80AA97621DE1FEB60E68 /* torrenza */ = {isa = PBXFileReference; lastKnownFileType = folder; name = torrenza; path = .; sourceTree = SOURCE_ROOT; };
 		BD67FCA33EF6DF3F51EAA479 /* QBittorrentImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QBittorrentImportView.swift; sourceTree = "<group>"; };
@@ -75,6 +77,7 @@
 				CEB45B4DB7E253EF30236891 /* Assets.xcassets */,
 				048C42F93FC101967D9300AD /* ContentView.swift */,
 				CBAF7E3D58A6C223D3EC7472 /* FileSelectionSmokeDiagnostic.swift */,
+				8B0A4B68008D8C2B7CF39536 /* ImportSmokeDiagnostic.swift */,
 				BD67FCA33EF6DF3F51EAA479 /* QBittorrentImportView.swift */,
 				4F06B0C08C777F5B932DE7F0 /* RefreshFetchSmokeDiagnostic.swift */,
 				5A660D6B059380F35BD414C5 /* RuTrackerLoginView.swift */,
@@ -185,6 +188,7 @@
 				AA97F3C846963A121C5B12A7 /* AppModel.swift in Sources */,
 				15E510228C56F31EB118EBBA /* ContentView.swift in Sources */,
 				4F6FE2112679A0C4986107E1 /* FileSelectionSmokeDiagnostic.swift in Sources */,
+				14C9DC4440F34369DA07A0D5 /* ImportSmokeDiagnostic.swift in Sources */,
 				004A9AACA3913E13066B10F8 /* QBittorrentImportView.swift in Sources */,
 				4D3CFB5EFC100A54E5DFFAF4 /* RefreshFetchSmokeDiagnostic.swift in Sources */,
 				0B4C6AAD134994529BF5B37F /* RuTrackerLoginView.swift in Sources */,

@@ -261,6 +261,16 @@ struct AddTorrentView: View {
                 Toggle("Verify and reuse existing files", isOn: $draft.allowExisting)
                 if draft.allowExisting && !draft.selectedFiles.isEmpty { Text("Existing complete files will be seeded using this choice. A ratio limit cannot be reached without downloaded-byte history; choose 0 to keep complete files stopped, or unlimited to seed them.").font(.caption).foregroundStyle(.secondary) }
             }
+            if let error = draft.error {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Couldn’t add torrent", systemImage: "exclamationmark.triangle").font(.headline)
+                    Text(error).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.callout)
+                .foregroundStyle(.red)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("torrent-import-error")
+            }
             HStack { if draft.isAdding { ProgressView().controlSize(.small); Text("Adding…").foregroundStyle(.secondary) }; Spacer(); Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction); Button("Add Torrent") { model.finishImport(draft) }.keyboardShortcut(.defaultAction).disabled(draft.destination == nil || !draft.ratio.isFinite || draft.ratio < 0 || (!draft.selectedFiles.isEmpty && draft.allowExisting && !draft.unlimitedSeed && draft.ratio > 0)) }
         }
         .padding(24)

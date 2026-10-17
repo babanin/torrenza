@@ -126,7 +126,7 @@ import TorrentStorage
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-UI", isDirectory: true)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let refreshSuffix = refreshSelection ? "-refresh-selection" : refreshResultCapture ? "-refresh-result" : refreshProgress ? "-refresh-progress" : refreshCheck ? "-refresh" : ""
-            let basename = "ui-smoke-\(dark ? "dark" : "light")\(narrow ? "-narrow" : wide ? "-wide" : "")\(longProfile ? "-long-profile" : "")\(fileBadges ? "-file-badges" : "")\(qbImport ? "-qb-import" : "")\(addTorrent ? "-add-torrent" : "")\(arguments.contains("--ui-qb-skip-verification") ? "-unchecked" : "")\(multiselect ? "-multiselect" : "")\(sortCheck ? "-sort" : "")\(fileSelectionCheck ? "-file-selection" : "")\(refreshSuffix)"
+            let basename = "ui-smoke-\(dark ? "dark" : "light")\(narrow ? "-narrow" : wide ? "-wide" : "")\(longProfile ? "-long-profile" : "")\(fileBadges ? "-file-badges" : "")\(qbImport ? "-qb-import" : "")\(addTorrent ? "-add-torrent" : "")\(arguments.contains("--ui-add-torrent-error") ? "-error" : "")\(arguments.contains("--ui-qb-skip-verification") ? "-unchecked" : "")\(multiselect ? "-multiselect" : "")\(sortCheck ? "-sort" : "")\(fileSelectionCheck ? "-file-selection" : "")\(refreshSuffix)"
             let output = directory.appendingPathComponent(basename + ".png")
             try? png.write(to: output, options: .atomic)
             var geometry = ["Window content size: \(view.bounds.size)", "Profile name: \(fixtureName)", "Toolbar item count: \(window.toolbar?.items.count ?? 0)"]
@@ -587,6 +587,11 @@ import TorrentStorage
         draft.selectedFiles = originalSelection
         draft.allowExisting = false
         draft.ratio = originalRatio
+        if ProcessInfo.processInfo.arguments.contains("--ui-add-torrent-error") {
+            draft.error = "Refusing to overwrite existing file: Open Video Collection/Season 02/Open.Video.Collection.S02E01.1080p.WEB-DL.Long.Descriptive.Filename.mkv"
+            sheet.setContentSize(minimum)
+            lines.append("Error-state capture: existing-file rejection, unchanged import choices, minimum sheet size")
+        }
         try? await Task.sleep(for: .milliseconds(100))
         return (passed, lines)
     }
@@ -1085,6 +1090,7 @@ import TorrentStorage
             await shutdown()
             try require(try Data(contentsOf: work.databaseURL) == closedDatabase, "Repeated shutdown does not rewrite a closed profile")
             lines.append(contentsOf: try await runFileSelectionSmoke())
+            lines.append(contentsOf: try await runImportFailureSmoke())
             lines.append("PROFILE SMOKE PASSED")
         } catch { lines.append("PROFILE SMOKE FAILED: \(error)") }
         try? FileManager.default.createDirectory(at: reportDirectory, withIntermediateDirectories: true)

@@ -419,7 +419,8 @@ import UserNotifications
         }
     }
     func finishImport(_ draft: ImportDraft) {
-        guard isProfileReady, !isSwitchingProfile, !terminating, !draft.isAdding, let destination = draft.destination else { return }
+        guard pendingImport === draft, isProfileReady, !isSwitchingProfile, !terminating, !draft.isAdding, let destination = draft.destination else { return }
+        draft.error = nil
         draft.isAdding = true
         perform { [self] engine in
             defer { draft.isAdding = false }
@@ -432,7 +433,7 @@ import UserNotifications
                 }
                 _ = try await engine.add(metainfo: metainfo, destination: destination, selectedFiles: draft.selectedFiles, seedRatio: draft.unlimitedSeed ? nil : draft.ratio, allowExisting: draft.allowExisting, startPaused: draft.selectedFiles.isEmpty)
                 pendingImport = nil
-            } catch { self.error = error.localizedDescription }
+            } catch { draft.error = error.localizedDescription }
         }
     }
     func profileEditorDismissed() { processNextImport() }
@@ -767,6 +768,7 @@ enum ProfileEditor: String, Identifiable {
     var unlimitedSeed = false
     var allowExisting = false
     var isAdding = false
+    var error: String?
     var sourceText: String
     init(metainfo: TorrentMetainfo, ratio: Double) { self.metainfo = metainfo; self.ratio = ratio; selectedFiles = Set(metainfo.files.filter { !$0.isPadding }.map(\.index)); sourceText = metainfo.refreshSource?.url.absoluteString ?? "" }
 }

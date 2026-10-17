@@ -86,6 +86,7 @@ open -n build/Build/Products/Debug/Torrenza.app --args \
 | Column sorting within folders | `--ui-sort-check` |
 | Per-file download controls and scoped actions | `--ui-file-selection-check` |
 | Add Torrent resizing and empty file selection | `--ui-add-torrent` |
+| Add Torrent inline failure and retry layout | `--ui-add-torrent --ui-add-torrent-error` |
 | qBittorrent import selection | `--ui-qb-import` |
 | Import without hashing | `--ui-qb-import --ui-qb-skip-verification` |
 
