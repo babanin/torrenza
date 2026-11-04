@@ -33,6 +33,7 @@ struct WorkspaceSplitView<S: View, C: View, I: View>: NSViewRepresentable {
         context.coordinator.update(
             sidebarVisible: sidebarVisible, sidebarWidth: sidebarWidth,
             inspectorVisible: inspectorVisible, inspectorWidth: inspectorWidth,
+            layoutToken: layoutToken,
             sidebar: AnyView(sidebar()), central: AnyView(central()), inspector: AnyView(inspector()))
         return split
     }
@@ -41,6 +42,7 @@ struct WorkspaceSplitView<S: View, C: View, I: View>: NSViewRepresentable {
         context.coordinator.update(
             sidebarVisible: sidebarVisible, sidebarWidth: sidebarWidth,
             inspectorVisible: inspectorVisible, inspectorWidth: inspectorWidth,
+            layoutToken: layoutToken,
             sidebar: AnyView(sidebar()), central: AnyView(central()), inspector: AnyView(inspector()))
     }
 
@@ -52,7 +54,15 @@ struct WorkspaceSplitView<S: View, C: View, I: View>: NSViewRepresentable {
 
     @MainActor final class Coordinator: NSObject, NSSplitViewDelegate {
         let model: AppModel
-        let token: UUID
+        /// Tracks the active profile's layout generation. Unlike the split,
+        /// the coordinator survives profile switches, so the token must be
+        /// refreshed whenever a new profile's layout arrives.
+        var token: UUID
+        /// True while an incoming profile's layout is being applied. Width
+        /// reporting is suppressed so restoration cannot save partially
+        /// applied geometry — or the previous profile's panes — into the new
+        /// profile's state.
+        private var applyingProfileLayout = false
         weak var split: WorkspaceNSSplitView?
         var sidebarHost: NSHostingView<AnyView>?
         var centralHost: NSHostingView<AnyView>?
@@ -78,20 +88,34 @@ struct WorkspaceSplitView<S: View, C: View, I: View>: NSViewRepresentable {
             else { split.addArrangedSubview(host) }
         }
 
+        /// Reports pane widths with the token and measurements captured
+        /// together, so a deferred invocation can never pair a newer token
+        /// with an older measurement.
         private func reportPaneWidths() {
-            guard let split, split.bounds.width > 100 else { return }
+            guard !applyingProfileLayout, let split, split.bounds.width > 100 else { return }
+            let activeToken = token
             if let sidebarHost, !sidebarHost.isHidden {
-                model.reportSidebarWidth(Double(sidebarHost.bounds.width), token: token)
+                let width = Double(sidebarHost.bounds.width)
+                model.reportSidebarWidth(width, token: activeToken)
             }
             if let inspectorHost, !inspectorHost.isHidden {
-                model.reportInspectorWidth(Double(inspectorHost.bounds.width), token: token)
+                let width = Double(inspectorHost.bounds.width)
+                model.reportInspectorWidth(width, token: activeToken)
             }
         }
 
         func update(sidebarVisible: Bool, sidebarWidth: Double,
                     inspectorVisible: Bool, inspectorWidth: Double,
+                    layoutToken: UUID,
                     sidebar: AnyView, central: AnyView, inspector: AnyView) {
             guard let split else { return }
+            // Adopt the incoming profile's token before touching pane
+            // geometry, and hold off reporting until the restore settles.
+            if token != layoutToken {
+                token = layoutToken
+                applyingProfileLayout = true
+            }
+            defer { applyingProfileLayout = false }
             if centralHost == nil {
                 let host = NSHostingView<AnyView>(rootView: central)
                 install(host, in: split, before: nil, savedWidth: 0)

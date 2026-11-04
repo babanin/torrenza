@@ -39,9 +39,10 @@ struct ContentView: View {
     // MARK: - Workspace
 
     private var workspace: some View {
-        // The layout token is captured when the split is built so delayed size
-        // reports cannot write into a newly selected profile. Rebuilding on
-        // profile change installs each profile's saved pane widths.
+        // The split and its hosted panes live for the app's lifetime; the
+        // coordinator refreshes its layout token whenever a new profile's
+        // layout arrives, so pane-width reports always target the active
+        // profile and restoration cannot cross-contaminate saved geometry.
         let layoutToken = model.currentLayoutToken
         return VStack(spacing: WorkspaceMetrics.panelSpacing) {
             WorkspaceSplitView(
