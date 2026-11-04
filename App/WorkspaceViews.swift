@@ -194,23 +194,40 @@ struct StatusShelfView: View {
     @Bindable var model: AppModel
     @State private var width: CGFloat = 900
 
+    /// Dedicated shelf formatting: known zero values print compactly, and the
+    /// em dash stays reserved for genuinely unknown values. Table and help
+    /// formatting elsewhere is unaffected.
+    private func shelfBytes(_ bytes: Int64) -> String {
+        bytes == 0 ? "0 B" : byteString(bytes)
+    }
+    private func shelfRate(_ rate: Double) -> String {
+        rate <= 0 ? "0 B/s" : rateString(rate)
+    }
+
     var body: some View {
         let transfers = model.transfers
         let downloadRate = transfers.reduce(0.0) { $0 + $1.downloadRate }
         let uploadRate = transfers.reduce(0.0) { $0 + $1.uploadRate }
         HStack(spacing: WorkspaceMetrics.space4) {
             Text("\(transfers.count) transfers · \(model.activeCount) active")
+                .foregroundStyle(.secondary)
                 .help("The active profile contains \(transfers.count) transfers; \(model.activeCount) are downloading or seeding.")
             Spacer(minLength: WorkspaceMetrics.space4)
             if let stats = model.statistics, width >= 720 {
-                Text("Session ↓ \(byteString(stats.current.downloadedBytes)) ↑ \(byteString(stats.current.uploadedBytes))")
-                    .help(sessionHelp(stats))
-                    .accessibilityLabel("Current session downloaded \(byteString(stats.current.downloadedBytes)), uploaded \(byteString(stats.current.uploadedBytes))")
+                HStack(spacing: WorkspaceMetrics.space3) {
+                    Text("Session ↓ \(shelfBytes(stats.current.downloadedBytes)) ↑ \(shelfBytes(stats.current.uploadedBytes))")
+                        .foregroundStyle(.secondary)
+                        .help(sessionHelp(stats))
+                        .accessibilityLabel("Current session downloaded \(shelfBytes(stats.current.downloadedBytes)), uploaded \(shelfBytes(stats.current.uploadedBytes))")
+                    Divider().frame(height: 12)
+                }
             }
             HStack(spacing: WorkspaceMetrics.space3) {
-                Label(rateString(downloadRate), systemImage: "arrow.down")
+                Label(shelfRate(downloadRate), systemImage: "arrow.down")
+                    .foregroundStyle(.primary)
                     .help("Total download rate for the whole profile")
-                Label(rateString(uploadRate), systemImage: "arrow.up")
+                Label(shelfRate(uploadRate), systemImage: "arrow.up")
+                    .foregroundStyle(.primary)
                     .help("Total upload rate for the whole profile")
             }
         }
@@ -218,7 +235,6 @@ struct StatusShelfView: View {
         .monospacedDigit()
         .lineLimit(1)
         .truncationMode(.tail)
-        .foregroundStyle(.secondary)
         .padding(.horizontal, WorkspaceMetrics.space4)
         .frame(height: WorkspaceMetrics.shelfHeight)
         .background(Color.torrenzaRecessed, in: RoundedRectangle(cornerRadius: WorkspaceMetrics.groupRadius + 2, style: .continuous))
@@ -238,7 +254,7 @@ struct StatusShelfView: View {
     private var shelfAccessibilitySummary: String {
         var summary = "\(model.transfers.count) transfers, \(model.activeCount) active."
         if let stats = model.statistics {
-            summary += " Current session downloaded \(byteString(stats.current.downloadedBytes)), uploaded \(byteString(stats.current.uploadedBytes))."
+            summary += " Current session downloaded \(shelfBytes(stats.current.downloadedBytes)), uploaded \(shelfBytes(stats.current.uploadedBytes))."
         }
         return summary
     }

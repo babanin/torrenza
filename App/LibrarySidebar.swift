@@ -66,16 +66,12 @@ private struct SidebarFilterRow: View {
                     .font(.system(size: WorkspaceMetrics.contentFontSize))
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .layoutPriority(1)
                 Spacer(minLength: WorkspaceMetrics.space2)
-                if filter == .attention && count > 0 {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .imageScale(.small)
-                        .foregroundStyle(.yellow)
-                        .accessibilityHidden(true)
-                }
                 Text(count.formatted())
                     .font(.system(size: WorkspaceMetrics.metadataFontSize))
                     .monospacedDigit()
+                    .frame(minWidth: 34, alignment: .trailing)
                     .foregroundStyle(isSelected ? Color.torrenzaSelectionText.opacity(0.8) : Color.secondary)
                     .accessibilityHidden(true)
             }
@@ -96,8 +92,10 @@ private struct SidebarFilterRow: View {
         .accessibilityHint(isSelected ? "Currently selected filter" : "Shows these transfers in the list")
     }
 
+    /// One leading symbol per row: the shared violet accent for ordinary
+    /// filters, semantic amber for Needs Attention.
     private var symbolForeground: Color {
-        if filter == .attention && count > 0 { return .yellow }
-        return isSelected ? Color.torrenzaSelectionText : Color.accentColor
+        if filter == .attention { return .orange }
+        return isSelected ? Color.torrenzaSelectionText : Color.torrenzaAccent
     }
 }

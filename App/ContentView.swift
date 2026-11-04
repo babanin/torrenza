@@ -53,7 +53,6 @@ struct ContentView: View {
                 layoutToken: layoutToken,
                 sidebar: {
                     LibrarySidebarView(model: model)
-                        .padding(.trailing, WorkspaceMetrics.space1 + 2)
                 },
                 central: {
                     centralPanel
@@ -62,10 +61,12 @@ struct ContentView: View {
                 inspector: {
                     TransferInspector(model: model)
                         .disabled(!model.canOperateTransfers)
-                        .padding(.leading, WorkspaceMetrics.space1 + 2)
                 }
             )
-            .id(model.activeProfile?.id)
+            // No split-level identity: the outline inside carries its own
+            // profile identity, pane-width restores flow through the
+            // coordinator's external sync, and rebuilding the split on
+            // profile activation leaves AppKit key-state walking a freed view.
             StatusShelfView(model: model)
         }
         .padding(WorkspaceMetrics.outerPadding)

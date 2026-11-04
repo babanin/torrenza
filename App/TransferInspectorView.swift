@@ -20,7 +20,9 @@ struct TransferInspector: View {
                         Text("Trackers").tag("Trackers")
                     }
                     .pickerStyle(.segmented)
+                    .labelsHidden()
                     .controlSize(.small)
+                    .tint(Color.torrenzaAccent)
                     .padding(.horizontal, WorkspaceMetrics.space3)
                     .padding(.bottom, WorkspaceMetrics.space2)
                     .accessibilityLabel("Inspector section")
@@ -89,8 +91,7 @@ struct TransferInspector: View {
                         Text("Transfer")
                             .font(.system(size: WorkspaceMetrics.metadataFontSize, weight: .semibold))
                             .foregroundStyle(.secondary)
-                        labeledRow("Status", statusText(transfer))
-                        labeledRow("Progress", "\(Int(transfer.progress * 100))%")
+                        // Status and progress live in the inspector header.
                         labeledRow("Downloaded", byteString(transfer.downloadedBytes))
                         labeledRow("Uploaded", byteString(transfer.uploadedBytes))
                         labeledRow("Ratio", transfer.downloadedBytes > 0 ? String(format: "%.2f", Double(transfer.uploadedBytes) / Double(transfer.downloadedBytes)) : "—")
@@ -129,11 +130,6 @@ struct TransferInspector: View {
             }
             .padding(WorkspaceMetrics.space3)
         }
-    }
-
-    private func statusText(_ transfer: TransferSnapshot) -> String {
-        let noFiles = transfer.state == .paused && !transfer.files.isEmpty && !transfer.files.contains(where: \.selected)
-        return noFiles ? "No files selected" : transfer.state.rawValue.capitalized
     }
 
     @ViewBuilder

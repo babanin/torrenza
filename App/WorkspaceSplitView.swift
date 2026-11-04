@@ -54,42 +54,28 @@ struct WorkspaceSplitView<S: View, C: View, I: View>: NSViewRepresentable {
         let model: AppModel
         let token: UUID
         weak var split: WorkspaceNSSplitView?
-        var sidebarHost: WorkspacePaneView?
-        var centralHost: WorkspacePaneView?
-        var inspectorHost: WorkspacePaneView?
+        var sidebarHost: NSHostingView<AnyView>?
+        var centralHost: NSHostingView<AnyView>?
+        var inspectorHost: NSHostingView<AnyView>?
 
         init(model: AppModel, token: UUID) {
             self.model = model
             self.token = token
         }
 
-        func attach(split: WorkspaceNSSplitView) { self.split = split }
+        func attach(split: WorkspaceNSSplitView) {
+            self.split = split
+            split.onPaneLayout = { [weak self] in self?.reportPaneWidths() }
+        }
 
-        private func install(_ host: WorkspacePaneView, in split: NSSplitView,
+        private func install(_ host: NSHostingView<AnyView>, in split: NSSplitView,
                              before reference: NSView?, savedWidth: Double) {
             // Frame-based panes: the split owns their geometry directly, and
             // hosted content does not push its own size.
             host.frame = NSRect(x: 0, y: 0, width: CGFloat(savedWidth), height: 0)
             host.sizingOptions = []
-            // Programmatic and user-driven pane moves both report widths.
-            host.onWidthChange = { [weak self, weak host] in
-                Task { @MainActor [weak self] in
-                    guard let self, let host else { return }
-                    self.reportPaneWidth(host)
-                }
-            }
             if let reference { split.addSubview(host, positioned: .below, relativeTo: reference) }
             else { split.addArrangedSubview(host) }
-        }
-
-        private func reportPaneWidth(_ pane: NSView) {
-            guard let split, split.bounds.width > 100 else { return }
-            if pane === sidebarHost, !pane.isHidden {
-                model.reportSidebarWidth(Double(pane.bounds.width), token: token)
-            }
-            if pane === inspectorHost, !pane.isHidden {
-                model.reportInspectorWidth(Double(pane.bounds.width), token: token)
-            }
         }
 
         private func reportPaneWidths() {
@@ -107,12 +93,12 @@ struct WorkspaceSplitView<S: View, C: View, I: View>: NSViewRepresentable {
                     sidebar: AnyView, central: AnyView, inspector: AnyView) {
             guard let split else { return }
             if centralHost == nil {
-                let host = WorkspacePaneView(rootView: central)
+                let host = NSHostingView<AnyView>(rootView: central)
                 install(host, in: split, before: nil, savedWidth: 0)
                 centralHost = host
             } else { centralHost?.rootView = central }
             if sidebarHost == nil {
-                let host = WorkspacePaneView(rootView: sidebar)
+                let host = NSHostingView<AnyView>(rootView: sidebar)
                 // Fixed order: sidebar, tree, inspector.
                 install(host, in: split, before: centralHost,
                         savedWidth: WorkspaceMetrics.clamp(sidebarWidth, min: WorkspaceMetrics.sidebarMinWidth, max: WorkspaceMetrics.sidebarMaxWidth))
@@ -120,7 +106,7 @@ struct WorkspaceSplitView<S: View, C: View, I: View>: NSViewRepresentable {
             }
             if let sidebarHost { sidebarHost.rootView = sidebar }
             if inspectorHost == nil {
-                let host = WorkspacePaneView(rootView: inspector)
+                let host = NSHostingView<AnyView>(rootView: inspector)
                 install(host, in: split, before: nil,
                         savedWidth: WorkspaceMetrics.clamp(inspectorWidth, min: WorkspaceMetrics.inspectorMinWidth, max: WorkspaceMetrics.inspectorMaxWidth))
                 inspectorHost = host
@@ -191,24 +177,37 @@ struct WorkspaceSplitView<S: View, C: View, I: View>: NSViewRepresentable {
     }
 }
 
-/// A pane whose width changes are observable, so the coordinator can report
-/// divider drags and programmatic position changes alike.
-final class WorkspacePaneView: NSHostingView<AnyView> {
-    var onWidthChange: (() -> Void)?
-
-    override var frame: NSRect {
-        didSet {
-            if abs(frame.width - oldValue.width) > 0.25 { onWidthChange?() }
-        }
-    }
-}
-
 /// A split view that owns its pane frames. Divider positions come from pane
-/// widths; bounds changes re-place the panes through `layoutPanes()`.
+/// widths; bounds changes re-place the panes through `layoutPanes()`. Divider
+/// regions are 12-point canvas gutters: the visible rule is suppressed, but
+/// the whole region stays a resize target with the split cursor.
 final class WorkspaceNSSplitView: NSSplitView {
     var savedSidebarWidth: CGFloat = WorkspaceMetrics.sidebarIdealWidth
     var savedInspectorWidth: CGFloat = WorkspaceMetrics.inspectorIdealWidth
     var needsPaneLayout = false
+    /// Fires after any pane relayout — divider drags, programmatic positions,
+    /// and window resizes — so width reports never miss a change.
+    var onPaneLayout: (() -> Void)?
+
+    override var dividerThickness: CGFloat { WorkspaceMetrics.dividerThickness }
+
+    /// Canvas shows through the divider region; no visible rule is drawn.
+    override func drawDivider(in rect: NSRect) {}
+
+    override func adjustSubviews() {
+        super.adjustSubviews()
+        onPaneLayout?()
+    }
+
+    override func setPosition(_ position: CGFloat, ofDividerAt dividerIndex: Int) {
+        super.setPosition(position, ofDividerAt: dividerIndex)
+        onPaneLayout?()
+    }
+
+    override func layout() {
+        super.layout()
+        onPaneLayout?()
+    }
 
     private var sidebarVisible: Bool { arrangedSubviews.count > 1 && arrangedSubviews.first?.isHidden == false }
     private var inspectorVisible: Bool { arrangedSubviews.count > 2 && arrangedSubviews.last?.isHidden == false }

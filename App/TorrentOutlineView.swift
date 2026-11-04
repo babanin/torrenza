@@ -16,16 +16,19 @@ struct TorrentOutlineView: NSViewRepresentable {
         let outline = NSOutlineView()
         // Solid panel surface: the SwiftUI panel container behind this scroll
         // view provides the background, so no alternating stripes.
-        outline.style = .plain; outline.rowSizeStyle = .medium
+        outline.style = .plain
+        // Custom geometry: 34-point rows for every level, sized explicitly.
+        outline.rowSizeStyle = .custom
+        outline.usesAutomaticRowHeights = false
         outline.rowHeight = WorkspaceMetrics.treeRowHeight
+        outline.intercellSpacing = NSSize(width: 0, height: 0)
         outline.usesAlternatingRowBackgroundColors = false
         outline.backgroundColor = .clear
-        outline.selectionHighlightStyle = .none
-        outline.intercellSpacing = NSSize(width: 0, height: 0)
+        outline.selectionHighlightStyle = .regular
         outline.allowsMultipleSelection = true; outline.autosaveTableColumns = false
         outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
-        for (id, title, width) in [("name", "Name", 320.0), ("added", "Added", 160.0), ("size", "Size", 90.0), ("progress", "Progress / Status", 180.0), ("download", "Download", 95.0), ("upload", "Upload", 95.0), ("uploaded", "Uploaded", 110.0), ("seeds", "Seeds", 85.0), ("peers", "Peers", 85.0)] {
-            let column = NSTableColumn(identifier: .init(id)); column.title = title; column.width = width; column.minWidth = id == "name" ? 180 : 65
+        for (id, title, width) in [("name", "Name", 320.0), ("added", "Added", 160.0), ("size", "Size", 90.0), ("progress", "Progress / Status", 184.0), ("download", "Download", 95.0), ("upload", "Upload", 95.0), ("uploaded", "Uploaded", 110.0), ("seeds", "Seeds", 85.0), ("peers", "Peers", 85.0)] {
+            let column = NSTableColumn(identifier: .init(id)); column.title = title; column.width = width; column.minWidth = id == "name" ? 180 : id == "progress" ? 144 : 65
             column.headerCell.font = .systemFont(ofSize: 11, weight: .semibold)
             column.sortDescriptorPrototype = NSSortDescriptor(key: id, ascending: id == "name")
             if id == "seeds" { column.headerToolTip = "Connected seeds / tracker-reported seeds. Estimates are not summed across trackers." }
@@ -166,7 +169,7 @@ struct TorrentOutlineView: NSViewRepresentable {
             refresh(model: model)
         }
         func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { belongsToActiveProfile && ((item as? TorrentTreeNode)?.expandable ?? false) }
-        func outlineView(_ outlineView: NSOutlineView, rowViewFor item: Any?) -> NSTableRowView? {
+        func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any?) -> NSTableRowView? {
             // The workspace's rounded lavender selection and quiet hover.
             TorrentTableRowView()
         }
@@ -248,15 +251,41 @@ struct TorrentOutlineView: NSViewRepresentable {
             }
             let textTint: NSColor = torrent?.state == .failed || unavailable ? .systemOrange : .labelColor
             if cellID.rawValue == "progress", let progressCell = cell as? TorrentProgressCellView {
-                // The compact track shows determinate progress; explicit statuses
-                // such as "No files selected" and "Skipped" stay text-only.
-                let textOnly = value == "No files selected" || value == "Skipped" || value == "Unavailable"
+                // Quiet determinate tint for paused, queued, or completed work;
+                // full violet for active transfers.
+                let quietTrack = Palette.accent.withAlphaComponent(0.35)
+                let activeTorrent = torrent.map { [TransferState.downloading, .seeding, .checking, .resolving].contains($0.state) } ?? false
                 let fraction: Double?
-                if let torrent { fraction = idleWithoutFilesProgress(torrent) }
-                else if unavailable || (value == "Skipped") { fraction = nil }
-                else { fraction = metrics.progress }
-                progressCell.setTrackHidden(textOnly || fraction == nil)
-                progressCell.configure(fraction: fraction, text: value, tint: textTint)
+                let tint: NSColor
+                let trackTint: NSColor
+                if let torrent {
+                    // Torrent rows stack status, percentage, and track; a
+                    // queued torrent can legitimately sit at 100%.
+                    fraction = idleWithoutFilesProgress(torrent)
+                    tint = textTint
+                    trackTint = activeTorrent ? Palette.accent : quietTrack
+                } else if unavailable {
+                    fraction = nil
+                    tint = .systemOrange
+                    trackTint = quietTrack
+                } else if case .file(let id, let index) = node.kind,
+                          let file = model.tree.file(transferID: id, index: index), !file.selected {
+                    // Skipped files explain themselves without a track.
+                    fraction = nil
+                    tint = .secondaryLabelColor
+                    trackTint = quietTrack
+                } else if case .file(let id, _) = node.kind, let transfer = model.tree.transfers[id] {
+                    fraction = metrics.progress
+                    tint = .labelColor
+                    trackTint = [TransferState.downloading, .seeding, .checking, .resolving].contains(transfer.state) ? Palette.accent : quietTrack
+                } else {
+                    // Aggregate volume and folder rows show percentage only.
+                    fraction = nil
+                    tint = .secondaryLabelColor
+                    trackTint = quietTrack
+                }
+                progressCell.setTrackHidden(fraction == nil)
+                progressCell.configure(fraction: fraction, text: value, tint: tint, trackTint: trackTint)
                 progressCell.setAccessibilityLabel("Progress: \(value)")
             } else {
                 cell.textField?.stringValue = value

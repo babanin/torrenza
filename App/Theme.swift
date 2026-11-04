@@ -103,15 +103,17 @@ enum WorkspaceMetrics {
     static let contentFontSize: CGFloat = 13
     /// Secondary metadata.
     static let metadataFontSize: CGFloat = 12
-    static let sidebarMinWidth: CGFloat = 184
-    static let sidebarIdealWidth: CGFloat = 208
-    static let sidebarMaxWidth: CGFloat = 260
+    static let sidebarMinWidth: CGFloat = 216
+    static let sidebarIdealWidth: CGFloat = 224
+    static let sidebarMaxWidth: CGFloat = 280
     static let inspectorMinWidth: CGFloat = 280
     static let inspectorIdealWidth: CGFloat = 304
     static let inspectorMaxWidth: CGFloat = 420
     static let centralMinWidth: CGFloat = 420
     static let sidebarRowHeight: CGFloat = 32
-    static let treeRowHeight: CGFloat = 30
+    static let treeRowHeight: CGFloat = 34
+    /// Split divider regions double as the canvas gutter between panels.
+    static let dividerThickness: CGFloat = 12
     static let shelfHeight: CGFloat = 44
     static let searchFieldWidth: CGFloat = 240
 
