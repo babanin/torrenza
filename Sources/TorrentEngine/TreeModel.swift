@@ -23,7 +23,22 @@ import TorrentCore
     }
 }
 
-public enum TreeFilter: String, CaseIterable, Sendable { case all = "All Transfers", active = "Active", downloading = "Downloading", completed = "Completed", paused = "Paused", attention = "Needs Attention" }
+public enum TreeFilter: String, CaseIterable, Sendable {
+    case all = "All Transfers", active = "Active", downloading = "Downloading", completed = "Completed", paused = "Paused", attention = "Needs Attention"
+
+    /// The single shared filter predicate. The tree and the sidebar counts must
+    /// agree, so both call this instead of duplicating the state semantics.
+    public func matches(_ transfer: TransferSnapshot) -> Bool {
+        switch self {
+        case .all: true
+        case .active: [.downloading, .seeding, .checking, .resolving].contains(transfer.state)
+        case .downloading: [.downloading, .queued, .resolving].contains(transfer.state)
+        case .completed: [.completed, .seeding].contains(transfer.state)
+        case .paused: transfer.state == .paused
+        case .attention: [.unavailable, .failed].contains(transfer.state)
+        }
+    }
+}
 public enum TreeSortColumn: String, Codable, Sendable { case name, size, progress, download, upload, uploaded, seeds, peers, added }
 public struct TreeSortOrder: Codable, Equatable, Sendable {
     public var column: TreeSortColumn
@@ -228,17 +243,15 @@ public struct TreeMetrics: Equatable, Sendable {
         return file.path.reduce(base) { $0.appendingPathComponent($1) }
     }
     private static func matches(_ transfer: TransferSnapshot, filter: TreeFilter) -> Bool {
-        switch filter {
-        case .all: true
-        case .active: [.downloading, .seeding, .checking, .resolving].contains(transfer.state)
-        case .downloading: [.downloading, .queued, .resolving].contains(transfer.state)
-        case .completed: [.completed, .seeding].contains(transfer.state)
-        case .paused: transfer.state == .paused
-        case .attention: [.unavailable, .failed].contains(transfer.state)
-        }
+        filter.matches(transfer)
+    }
+    /// Search matching shared by the tree and the panel header so their
+    /// summaries can never disagree.
+    public static func matchesSearch(_ transfer: TransferSnapshot, search: String) -> Bool {
+        search.isEmpty || transfer.name.localizedStandardContains(search) || (transfer.destination?.path.localizedStandardContains(search) ?? false) || transfer.files.contains { $0.file.path.joined(separator: "/").localizedStandardContains(search) }
     }
     private static func matches(_ transfer: TransferSnapshot, search: String) -> Bool {
-        search.isEmpty || transfer.name.localizedStandardContains(search) || (transfer.destination?.path.localizedStandardContains(search) ?? false) || transfer.files.contains { $0.file.path.joined(separator: "/").localizedStandardContains(search) }
+        matchesSearch(transfer, search: search)
     }
     private static func volume(for url: URL) -> (path: String, name: String) {
         let parts = url.standardizedFileURL.pathComponents

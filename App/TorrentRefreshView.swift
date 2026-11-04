@@ -48,22 +48,30 @@ struct TorrentRefreshSourceView: View {
         }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(isImport ? "Open Torrent URL" : "Torrent Refresh Source").font(.title2).bold()
-            Text("Enter the RuTracker topic link or a direct .torrent download URL. Torrenza remembers it for future refreshes.")
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: WorkspaceMetrics.space4) {
+            SheetHeader(
+                title: isImport ? "Open Torrent URL" : "Torrent Refresh Source",
+                subtitle: "Enter the RuTracker topic link or a direct .torrent download URL. Torrenza remembers it for future refreshes.",
+                systemImage: "arrow.clockwise.circle"
+            )
             TextField("https://rutracker.org/forum/viewtopic.php?t=…", text: $draft.sourceText)
                 .textFieldStyle(.roundedBorder).accessibilityLabel("Torrent source URL")
                 .onSubmit { model.saveRefreshSource() }
-            if let error = draft.error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-            HStack {
+            if let error = draft.error {
+                NoticeView(kind: .error, title: "Could not save the source", message: error)
+            }
+            SheetFooter {
                 if draft.isSaving { ProgressView().controlSize(.small) }
-                Spacer()
+            } actions: {
                 Button("Cancel") { model.refreshSourceEditor = nil }.keyboardShortcut(.cancelAction)
                 Button(actionTitle, action: model.saveRefreshSource)
                     .keyboardShortcut(.defaultAction).disabled(draft.sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-        }.padding(24).frame(width: 540).disabled(draft.isSaving).interactiveDismissDisabled(draft.isSaving)
+        }
+        .padding(WorkspaceMetrics.space4)
+        .frame(width: 540)
+        .disabled(draft.isSaving)
+        .interactiveDismissDisabled(draft.isSaving)
     }
 }
 
@@ -71,16 +79,18 @@ struct TorrentRefreshProgressView: View {
     @Bindable var model: AppModel
     @Bindable var operation: TorrentRefreshOperation
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(operation.title).font(.title2).bold().lineLimit(2)
+        VStack(alignment: .leading, spacing: WorkspaceMetrics.space3) {
+            SheetHeader(title: operation.title, systemImage: "arrow.clockwise.circle")
             if operation.fetcher.isAuthenticationRequired && operation.isWorking {
                 RuTrackerLoginView(fetcher: operation.fetcher)
             } else {
-                HStack {
+                HStack(spacing: WorkspaceMetrics.space2) {
                     if operation.isWorking { ProgressView().controlSize(.small) }
                     Text(operation.status)
                 }
-                if let error = operation.error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+                if let error = operation.error {
+                    NoticeView(kind: .error, title: "Could not refresh torrent", message: error)
+                }
                 if let metainfo = operation.selectionMetainfo {
                     List(metainfo.files.filter { !$0.isPadding }) { file in
                         Toggle(isOn: Binding(get: { operation.selectedFiles.contains(file.index) }, set: { selected in
@@ -90,15 +100,17 @@ struct TorrentRefreshProgressView: View {
                                 Text(file.path.dropFirst().joined(separator: "/")).lineLimit(1).truncationMode(.middle)
                                     .help(file.path.joined(separator: "/"))
                                 Spacer()
-                                Text(byteString(file.length)).foregroundStyle(.secondary)
+                                Text(byteString(file.length)).foregroundStyle(.secondary).monospacedDigit()
                             }
                         }
+                        .toggleStyle(.checkbox)
                     }.frame(height: 220)
                 }
             }
             if !operation.fetcher.isAuthenticationRequired {
-                HStack {
-                    Spacer()
+                SheetFooter {
+                    EmptyView()
+                } actions: {
                     if operation.isWorking {
                         Button("Cancel", action: model.cancelTorrentRefresh).keyboardShortcut(.cancelAction)
                     } else if operation.selectionMetainfo != nil {
@@ -111,7 +123,8 @@ struct TorrentRefreshProgressView: View {
                 }
             }
         }
-        .padding(24).frame(width: operation.fetcher.isAuthenticationRequired ? 780 : 540)
+        .padding(WorkspaceMetrics.space4)
+        .frame(width: operation.fetcher.isAuthenticationRequired ? 780 : 540)
         .interactiveDismissDisabled()
     }
 }

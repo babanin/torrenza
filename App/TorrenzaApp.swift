@@ -11,7 +11,7 @@ import SwiftUI
                 .task { delegate.model = model; model.launch() }
                 .onOpenURL { model.open([$0]) }
         }
-        .defaultSize(width: 1150, height: 700)
+        .defaultSize(width: 1280, height: 800)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open Torrent…") { model.openFile() }.keyboardShortcut("o").disabled(!model.canOpenTorrentURL)

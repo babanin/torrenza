@@ -12,12 +12,21 @@ struct TorrentOutlineView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true; scroll.autohidesScrollers = true
+        scroll.drawsBackground = false; scroll.backgroundColor = .clear
         let outline = NSOutlineView()
-        outline.style = .inset; outline.rowSizeStyle = .medium; outline.usesAlternatingRowBackgroundColors = true
+        // Solid panel surface: the SwiftUI panel container behind this scroll
+        // view provides the background, so no alternating stripes.
+        outline.style = .plain; outline.rowSizeStyle = .medium
+        outline.rowHeight = WorkspaceMetrics.treeRowHeight
+        outline.usesAlternatingRowBackgroundColors = false
+        outline.backgroundColor = .clear
+        outline.selectionHighlightStyle = .none
+        outline.intercellSpacing = NSSize(width: 0, height: 0)
         outline.allowsMultipleSelection = true; outline.autosaveTableColumns = false
         outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         for (id, title, width) in [("name", "Name", 320.0), ("added", "Added", 160.0), ("size", "Size", 90.0), ("progress", "Progress / Status", 180.0), ("download", "Download", 95.0), ("upload", "Upload", 95.0), ("uploaded", "Uploaded", 110.0), ("seeds", "Seeds", 85.0), ("peers", "Peers", 85.0)] {
             let column = NSTableColumn(identifier: .init(id)); column.title = title; column.width = width; column.minWidth = id == "name" ? 180 : 65
+            column.headerCell.font = .systemFont(ofSize: 11, weight: .semibold)
             column.sortDescriptorPrototype = NSSortDescriptor(key: id, ascending: id == "name")
             if id == "seeds" { column.headerToolTip = "Connected seeds / tracker-reported seeds. Estimates are not summed across trackers." }
             if id == "peers" { column.headerToolTip = "All connected peers, including seeds / tracker-reported total peers." }
@@ -157,11 +166,18 @@ struct TorrentOutlineView: NSViewRepresentable {
             refresh(model: model)
         }
         func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { belongsToActiveProfile && ((item as? TorrentTreeNode)?.expandable ?? false) }
+        func outlineView(_ outlineView: NSOutlineView, rowViewFor item: Any?) -> NSTableRowView? {
+            // The workspace's rounded lavender selection and quiet hover.
+            TorrentTableRowView()
+        }
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
             guard belongsToActiveProfile, let node = item as? TorrentTreeNode, let column = tableColumn else { return nil }
             let cellID = column.identifier
             let cell: NSTableCellView
             if let reused = outlineView.makeView(withIdentifier: cellID, owner: self) as? NSTableCellView { cell = reused }
+            else if cellID.rawValue == "progress" {
+                let progressCell = TorrentProgressCellView(); progressCell.identifier = cellID; cell = progressCell
+            }
             else {
                 cell = cellID.rawValue == "name" ? TorrentNameCellView() : NSTableCellView(); cell.identifier = cellID
                 let text = NSTextField(labelWithString: ""); text.translatesAutoresizingMaskIntoConstraints = false; text.lineBreakMode = .byTruncatingMiddle; text.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -171,7 +187,7 @@ struct TorrentOutlineView: NSViewRepresentable {
                     NSLayoutConstraint.activate([icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16), text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6)])
                     (cell as? TorrentNameCellView)?.installSelectionControl(relativeTo: icon)
                     (cell as? TorrentNameCellView)?.installBadge(relativeTo: icon)
-                } else { text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4).isActive = true; text.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular) }
+                } else { text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4).isActive = true; text.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular) }
                 NSLayoutConstraint.activate([text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             }
             let metrics = model.tree.metrics(for: node)
@@ -179,10 +195,13 @@ struct TorrentOutlineView: NSViewRepresentable {
             let unavailable = !node.transferIDs.isEmpty && node.transferIDs.allSatisfy { model.tree.transfers[$0]?.state == .unavailable }
             let value: String
             var tooltip: String?
+            let isTorrentRow: Bool
+            if case .torrent = node.kind { isTorrentRow = true } else { isTorrentRow = false }
             switch cellID.rawValue {
             case "name":
                 value = node.name; tooltip = node.url?.path ?? node.name
                 cell.imageView?.image = icon(for: node, torrent: torrent)
+                cell.textField?.font = .systemFont(ofSize: 13, weight: isTorrentRow ? .semibold : .regular)
                 let badgeState = torrent?.isMultiFile == false ? torrent?.state : nil
                 (cell as? TorrentNameCellView)?.setTransferState(badgeState)
                 configureSelectionControl(in: cell, for: node)
@@ -227,12 +246,33 @@ struct TorrentOutlineView: NSViewRepresentable {
                 } else { value = "" }
             default: value = ""
             }
-            cell.textField?.stringValue = value
-            cell.textField?.textColor = torrent?.state == .failed || unavailable ? .systemOrange : .labelColor
+            let textTint: NSColor = torrent?.state == .failed || unavailable ? .systemOrange : .labelColor
+            if cellID.rawValue == "progress", let progressCell = cell as? TorrentProgressCellView {
+                // The compact track shows determinate progress; explicit statuses
+                // such as "No files selected" and "Skipped" stay text-only.
+                let textOnly = value == "No files selected" || value == "Skipped" || value == "Unavailable"
+                let fraction: Double?
+                if let torrent { fraction = idleWithoutFilesProgress(torrent) }
+                else if unavailable || (value == "Skipped") { fraction = nil }
+                else { fraction = metrics.progress }
+                progressCell.setTrackHidden(textOnly || fraction == nil)
+                progressCell.configure(fraction: fraction, text: value, tint: textTint)
+                progressCell.setAccessibilityLabel("Progress: \(value)")
+            } else {
+                cell.textField?.stringValue = value
+                cell.textField?.textColor = textTint
+            }
             cell.toolTip = tooltip
             cell.setAccessibilityLabel("\(column.title): \(value)")
             cell.setAccessibilityHelp(tooltip)
             return cell
+        }
+        /// Progress for a torrent row, or nil when the status text carries no
+        /// determinate value.
+        private func idleWithoutFilesProgress(_ torrent: TransferSnapshot) -> Double? {
+            let idleWithoutFiles = [.paused, .queued, .completed].contains(torrent.state)
+                && !torrent.files.isEmpty && !torrent.files.contains { $0.selected && !$0.file.isPadding }
+            return idleWithoutFiles ? nil : torrent.progress
         }
         private func configureSelectionControl(in cell: NSTableCellView, for node: TorrentTreeNode) {
             guard let cell = cell as? TorrentNameCellView else { return }
@@ -378,6 +418,12 @@ private final class TorrentNameCellView: NSTableCellView {
     let selectionCheckbox = TorrentFileSelectionButton(checkboxWithTitle: "", target: nil, action: nil)
     private var iconLeading: NSLayoutConstraint?
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        // Layer colors do not resolve dynamically; re-apply the current state.
+        setTransferState(displayedState)
+    }
+
     func installSelectionControl(relativeTo icon: NSImageView) {
         selectionCheckbox.translatesAutoresizingMaskIntoConstraints = false
         selectionCheckbox.allowsMixedState = true
@@ -421,9 +467,8 @@ private final class TorrentNameCellView: NSTableCellView {
     func setTransferState(_ state: TransferState?) {
         // Reused cells must shed the badge when they become an ordinary file or folder.
         statusBadge.isHidden = state == nil
-        guard state != displayedState else { return }
         displayedState = state
-        guard let state else { statusBadge.image = nil; return }
+        guard let state else { statusBadge.image = nil; statusBadge.layer?.backgroundColor = nil; return }
         let symbol: String
         let color: NSColor
         switch state {
@@ -439,7 +484,7 @@ private final class TorrentNameCellView: NSTableCellView {
         }
         statusBadge.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 6, weight: .bold))
-        statusBadge.layer?.backgroundColor = color.cgColor
+        statusBadge.layer?.backgroundColor = color.resolved.cgColor
     }
 }
 

@@ -199,22 +199,45 @@ struct QBittorrentImportView: View {
     @Bindable var draft: QBittorrentImportDraft
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Import from qBittorrent").font(.title2).bold()
-            Text("Reuse your downloads in place and add the selected torrents paused.")
-                .foregroundStyle(.secondary)
-            HStack {
-                Label(draft.sourceURL?.path ?? "Choose qBittorrent’s BT_backup folder", systemImage: "folder")
-                    .lineLimit(1).truncationMode(.middle).help(draft.sourceURL?.path ?? "")
-                Spacer()
-                Button("Choose Folder…", action: draft.chooseBackupFolder).disabled(draft.isScanning || draft.isImporting)
+        VStack(alignment: .leading, spacing: WorkspaceMetrics.space3) {
+            SheetHeader(
+                title: "Import from qBittorrent",
+                subtitle: "Reuse your downloads in place and add the selected torrents paused.",
+                systemImage: "tray.and.arrow.down"
+            )
+            GroupSurface {
+                HStack(spacing: WorkspaceMetrics.space2) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(draft.sourceURL?.lastPathComponent ?? "qBittorrent’s BT_backup folder")
+                            .font(.system(size: WorkspaceMetrics.contentFontSize, weight: .semibold))
+                        Text(draft.sourceURL?.path ?? "Choose qBittorrent’s BT_backup folder")
+                            .font(.system(size: WorkspaceMetrics.metadataFontSize))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(draft.sourceURL?.path ?? "")
+                    }
+                    Spacer(minLength: WorkspaceMetrics.space2)
+                    Button("Choose Folder…", action: draft.chooseBackupFolder).disabled(draft.isScanning || draft.isImporting)
+                }
+                .padding(WorkspaceMetrics.space3)
             }
             if draft.isScanning {
-                HStack { ProgressView().controlSize(.small); Text("Reading saved torrents…"); Spacer(); Button("Cancel") { Task { await draft.cancelScanning() } } }
+                HStack(spacing: WorkspaceMetrics.space2) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading saved torrents…")
+                    Spacer()
+                    Button("Cancel") { Task { await draft.cancelScanning() } }
+                }
             }
-            HStack {
+            HStack(spacing: WorkspaceMetrics.space2) {
                 TextField("Search torrents or destinations", text: $draft.search).textFieldStyle(.roundedBorder)
-                Text("\(draft.selection.count) selected / \(draft.candidates.count)").foregroundStyle(.secondary).monospacedDigit()
+                Text("\(draft.selection.count) selected / \(draft.candidates.count)")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
             Table(draft.visibleCandidates) {
                 TableColumn("") { candidate in
@@ -230,43 +253,56 @@ struct QBittorrentImportView: View {
                 TableColumn("Destination") { candidate in Text(candidate.destination?.path ?? "—").lineLimit(1).truncationMode(.middle).help(candidate.destination?.path ?? "") }.width(190)
                 TableColumn("Status") { candidate in Text(draft.status(candidate)).lineLimit(1).truncationMode(.tail).help(draft.status(candidate)).foregroundStyle(draft.canSelect(candidate) ? Color.primary : Color.secondary) }.width(200)
             }
+            .frame(maxHeight: .infinity)
             .overlay {
                 if draft.candidates.isEmpty && !draft.isScanning {
                     ContentUnavailableView("Choose a Backup Folder", systemImage: "tray.and.arrow.down", description: Text("Usually in ~/Library/Application Support/qBittorrent/BT_backup."))
                 }
             }
-            HStack {
+            HStack(spacing: WorkspaceMetrics.space2) {
                 Button("Select Shown", action: draft.selectVisible)
                 Button("Select None") { draft.selection = [] }
-                Spacer()
-                if draft.importedCount > 0 { Text("\(draft.importedCount) imported").foregroundStyle(.secondary) }
+                Spacer(minLength: WorkspaceMetrics.space2)
+                if draft.importedCount > 0 { Text("\(draft.importedCount) imported").foregroundStyle(.secondary).monospacedDigit() }
             }.disabled(draft.isImporting || draft.isScanning)
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Verify existing data", isOn: $draft.verifyExistingData)
-                    .toggleStyle(.checkbox).disabled(draft.isImporting)
-                Text(draft.verifyExistingData
-                     ? "Check file contents before importing. Turn off to import faster using qBittorrent’s saved progress."
-                     : "Use qBittorrent’s saved progress without checking file contents. Files should be unchanged since that progress was saved.")
-                    .font(.caption).foregroundStyle(.secondary)
+            GroupSurface {
+                VStack(alignment: .leading, spacing: WorkspaceMetrics.space1) {
+                    Toggle("Verify existing data", isOn: $draft.verifyExistingData)
+                        .toggleStyle(.checkbox).disabled(draft.isImporting)
+                    Text(draft.verifyExistingData
+                         ? "Check file contents before importing. Turn off to import faster using qBittorrent’s saved progress."
+                         : "Use qBittorrent’s saved progress without checking file contents. Files should be unchanged since that progress was saved.")
+                        .font(.system(size: WorkspaceMetrics.metadataFontSize)).foregroundStyle(.secondary)
+                }
+                .padding(WorkspaceMetrics.space3)
             }
             Text("Pause these torrents in qBittorrent before importing. Saved file selections and transfer totals are preserved. Inherited ratio limits use Torrenza’s default.")
-                .font(.callout).foregroundStyle(.secondary)
-            if let error = draft.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
-            HStack {
+                .font(.system(size: WorkspaceMetrics.metadataFontSize)).foregroundStyle(.secondary)
+            if let error = draft.error {
+                NoticeView(kind: .error, title: "Some torrents need attention", message: error)
+            }
+            SheetFooter {
                 if draft.isImporting {
-                    ProgressView().controlSize(.small)
-                    Text(draft.progress).lineLimit(1).truncationMode(.middle).help(draft.progress)
-                    Spacer()
-                    Button(draft.stopRequested ? "Stopping after current…" : "Stop After Current") { draft.stopRequested = true }.disabled(draft.stopRequested)
+                    HStack(spacing: WorkspaceMetrics.space2) {
+                        ProgressView().controlSize(.small)
+                        Text(draft.progress).lineLimit(1).truncationMode(.middle).help(draft.progress)
+                        Button(draft.stopRequested ? "Stopping after current…" : "Stop After Current") { draft.stopRequested = true }.disabled(draft.stopRequested)
+                    }
+                }
+            } actions: {
+                if draft.isImporting {
+                    EmptyView()
                 } else {
-                    Spacer()
                     Button("Done", action: model.closeQBittorrentImport).keyboardShortcut(.cancelAction).disabled(draft.isScanning)
                     Button("Import Selected") { model.finishQBittorrentImport(draft) }
-                        .keyboardShortcut(.defaultAction).disabled(draft.selection.isEmpty || draft.isScanning)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(draft.selection.isEmpty || draft.isScanning)
                 }
             }
         }
-        .padding(24).frame(width: 940, height: 620)
+        .padding(WorkspaceMetrics.space4)
+        .frame(minWidth: 820, idealWidth: 940, minHeight: 560, idealHeight: 620)
+        .presentationSizing(.fitted)
         .interactiveDismissDisabled()
     }
 }

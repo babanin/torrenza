@@ -21,10 +21,25 @@ struct UIState: Codable, Equatable {
     var sortOrder: TreeSortOrder?
     // Optional so existing profile state decodes without losing saved interface preferences.
     var appearance: AppAppearance?
+    // Workspace layout. Optional so existing profiles keep decoding; missing
+    // values fall back to visible sidebar at 208 and 304-point inspector.
+    var sidebarVisible: Bool?
+    var sidebarWidth: Double?
+    var inspectorWidth: Double?
     // Profile-local dialog locations and reusable destination access.
     var lastTorrentDirectory: URL?
     var lastDestinationDirectory: URL?
     var lastDestinationBookmark: Data?
+
+    var effectiveSidebarVisible: Bool { sidebarVisible ?? true }
+    var effectiveSidebarWidth: Double {
+        guard let width = sidebarWidth, width.isFinite else { return WorkspaceMetrics.sidebarIdealWidth }
+        return WorkspaceMetrics.clamp(width, min: WorkspaceMetrics.sidebarMinWidth, max: WorkspaceMetrics.sidebarMaxWidth)
+    }
+    var effectiveInspectorWidth: Double {
+        guard let width = inspectorWidth, width.isFinite else { return WorkspaceMetrics.inspectorIdealWidth }
+        return WorkspaceMetrics.clamp(width, min: WorkspaceMetrics.inspectorMinWidth, max: WorkspaceMetrics.inspectorMaxWidth)
+    }
 }
 
 @MainActor extension AppModel {

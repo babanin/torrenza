@@ -5,15 +5,16 @@ struct RuTrackerLoginView: View {
     let fetcher: TorrentRefreshFetcher
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("RuTracker").font(.title2.bold())
-            Text(fetcher.status).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: WorkspaceMetrics.space2) {
+            SheetHeader(title: "RuTracker", subtitle: fetcher.status, systemImage: "person.crop.circle")
             RuTrackerBrowser(webView: fetcher.webView)
                 .frame(minWidth: 700, minHeight: 480)
-            HStack {
+            SheetFooter {
+                EmptyView()
+            } actions: {
                 Button("Cancel") { fetcher.cancel() }.keyboardShortcut(.cancelAction)
                 Button("Sign out") { Task { await fetcher.signOut() } }
-                Spacer()
+                Spacer(minLength: WorkspaceMetrics.space2)
                 Button("Sign in") { fetcher.openLogin() }
                 Button("Continue") { fetcher.continueAfterAuthentication() }.keyboardShortcut(.defaultAction)
             }

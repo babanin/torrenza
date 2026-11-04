@@ -126,7 +126,7 @@ public struct EngineSettings: Codable, Sendable, Equatable {
     }
 }
 
-public enum TransferState: String, Sendable, Codable { case resolving, queued, checking, downloading, seeding, paused, completed, unavailable, failed }
+public enum TransferState: String, Sendable, Codable, CaseIterable { case resolving, queued, checking, downloading, seeding, paused, completed, unavailable, failed }
 public struct SessionStatistics: Sendable, Codable, Equatable, Identifiable {
     public var id: String
     public var startedAt: Date

@@ -8,36 +8,47 @@
 
 /* Begin PBXBuildFile section */
 		004A9AACA3913E13066B10F8 /* QBittorrentImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD67FCA33EF6DF3F51EAA479 /* QBittorrentImportView.swift */; };
+		0ADAA89831BD18B4CE47D237 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8079E214F33E6FF532753CB3 /* Theme.swift */; };
 		0B4C6AAD134994529BF5B37F /* RuTrackerLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A660D6B059380F35BD414C5 /* RuTrackerLoginView.swift */; };
 		0C9A3B01997414B686FFEAAF /* TorrenzaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FD023AE4DE259EE7DB6066 /* TorrenzaApp.swift */; };
 		14C9DC4440F34369DA07A0D5 /* ImportSmokeDiagnostic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0A4B68008D8C2B7CF39536 /* ImportSmokeDiagnostic.swift */; };
 		15E510228C56F31EB118EBBA /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 048C42F93FC101967D9300AD /* ContentView.swift */; };
-		1B02FD79FB6093C292A46E28 /* ToolbarSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A7791A028569491691DB579 /* ToolbarSearchField.swift */; };
 		2DD4336AEBD56803612C6050 /* UIState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0CD872AC480845DFA9A31F0 /* UIState.swift */; };
 		4D3CFB5EFC100A54E5DFFAF4 /* RefreshFetchSmokeDiagnostic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F06B0C08C777F5B932DE7F0 /* RefreshFetchSmokeDiagnostic.swift */; };
 		4F6FE2112679A0C4986107E1 /* FileSelectionSmokeDiagnostic.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBAF7E3D58A6C223D3EC7472 /* FileSelectionSmokeDiagnostic.swift */; };
 		54000B8CF0D68EAF65EC05B7 /* UISmokeDiagnostic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001C6E3FF4E74C24E4A00A83 /* UISmokeDiagnostic.swift */; };
 		54A8EAF493A0E16FE293E113 /* TorrentStorage in Frameworks */ = {isa = PBXBuildFile; productRef = FFBF0E93FA42910C91B17434 /* TorrentStorage */; };
+		5547BB7A6E1E2F33D2BAAF27 /* AddTorrentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1BBC33A7D15061DA4F3EB7B /* AddTorrentView.swift */; };
 		5AA7A3EADFFF009D72F6AB28 /* TorrentRefreshView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94EB84A07336E24F1644CA69 /* TorrentRefreshView.swift */; };
+		6150E175B92D443568DC083D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 131DA1217A97B6C6DD052925 /* SettingsView.swift */; };
 		676733997D22A2D776BC9F17 /* TorrentCore in Frameworks */ = {isa = PBXBuildFile; productRef = 9FF7A4A3A2744ADE20DD64EC /* TorrentCore */; };
+		7692F9AE89AE2CFCEDE041E6 /* LibrarySidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E17CFBA01558D14681C4140 /* LibrarySidebar.swift */; };
 		795A4720BA3D1774173F2C82 /* TorrentRefreshFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40684BF63C5476AC99B09853 /* TorrentRefreshFetcher.swift */; };
 		912EBA14AEB560EDCDDBCA1C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CEB45B4DB7E253EF30236891 /* Assets.xcassets */; };
 		9CE0E4234CAC684C7B191E47 /* DestinationSmokeDiagnostic.swift in Sources */ = {isa = PBXBuildFile; fileRef = D53CBADE10BF72A0932153FC /* DestinationSmokeDiagnostic.swift */; };
 		9DCE1BF61B498F3C148D1175 /* TorrentOutlineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F63FF72CE52643A16A9D9184 /* TorrentOutlineView.swift */; };
+		A079EE41C63FEBBC059D78CC /* WorkspaceSplitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E506EE1DA800643383444386 /* WorkspaceSplitView.swift */; };
 		AA97F3C846963A121C5B12A7 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D715535119C7670DC88FCA41 /* AppModel.swift */; };
+		B85333073B3741ABA3079FA0 /* WorkspaceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C641982E05BF68D5E47F2B9 /* WorkspaceViews.swift */; };
 		BED8DC7CD9512AAA3F14F60B /* TorrentEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 72190949B17883394B221707 /* TorrentEngine */; };
+		CE5D24A05E0A19A6F08D4E2B /* TransferInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8FE91179A52A62D98D7D82F /* TransferInspectorView.swift */; };
+		FB7EAFA52C1A37E9E3767187 /* TorrentTreeCells.swift in Sources */ = {isa = PBXBuildFile; fileRef = F72B9FA02C0EA6465265DBDF /* TorrentTreeCells.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		001C6E3FF4E74C24E4A00A83 /* UISmokeDiagnostic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UISmokeDiagnostic.swift; sourceTree = "<group>"; };
 		048C42F93FC101967D9300AD /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		131DA1217A97B6C6DD052925 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		2C641982E05BF68D5E47F2B9 /* WorkspaceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceViews.swift; sourceTree = "<group>"; };
 		3A24E17A04CC908BC038CD97 /* Torrenza.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Torrenza.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		3A7791A028569491691DB579 /* ToolbarSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolbarSearchField.swift; sourceTree = "<group>"; };
 		40684BF63C5476AC99B09853 /* TorrentRefreshFetcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TorrentRefreshFetcher.swift; sourceTree = "<group>"; };
+		4E17CFBA01558D14681C4140 /* LibrarySidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebar.swift; sourceTree = "<group>"; };
 		4F06B0C08C777F5B932DE7F0 /* RefreshFetchSmokeDiagnostic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RefreshFetchSmokeDiagnostic.swift; sourceTree = "<group>"; };
 		5A660D6B059380F35BD414C5 /* RuTrackerLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuTrackerLoginView.swift; sourceTree = "<group>"; };
+		8079E214F33E6FF532753CB3 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		8B0A4B68008D8C2B7CF39536 /* ImportSmokeDiagnostic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportSmokeDiagnostic.swift; sourceTree = "<group>"; };
 		94EB84A07336E24F1644CA69 /* TorrentRefreshView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TorrentRefreshView.swift; sourceTree = "<group>"; };
+		A1BBC33A7D15061DA4F3EB7B /* AddTorrentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddTorrentView.swift; sourceTree = "<group>"; };
 		A72E80AA97621DE1FEB60E68 /* torrenza */ = {isa = PBXFileReference; lastKnownFileType = folder; name = torrenza; path = .; sourceTree = SOURCE_ROOT; };
 		BD67FCA33EF6DF3F51EAA479 /* QBittorrentImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QBittorrentImportView.swift; sourceTree = "<group>"; };
 		C4FD023AE4DE259EE7DB6066 /* TorrenzaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TorrenzaApp.swift; sourceTree = "<group>"; };
@@ -46,7 +57,10 @@
 		D53CBADE10BF72A0932153FC /* DestinationSmokeDiagnostic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DestinationSmokeDiagnostic.swift; sourceTree = "<group>"; };
 		D715535119C7670DC88FCA41 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		E0CD872AC480845DFA9A31F0 /* UIState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIState.swift; sourceTree = "<group>"; };
+		E506EE1DA800643383444386 /* WorkspaceSplitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSplitView.swift; sourceTree = "<group>"; };
+		E8FE91179A52A62D98D7D82F /* TransferInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferInspectorView.swift; sourceTree = "<group>"; };
 		F63FF72CE52643A16A9D9184 /* TorrentOutlineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TorrentOutlineView.swift; sourceTree = "<group>"; };
+		F72B9FA02C0EA6465265DBDF /* TorrentTreeCells.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TorrentTreeCells.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -75,22 +89,29 @@
 		39E6E2DDD345CA74202F4649 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				A1BBC33A7D15061DA4F3EB7B /* AddTorrentView.swift */,
 				D715535119C7670DC88FCA41 /* AppModel.swift */,
 				CEB45B4DB7E253EF30236891 /* Assets.xcassets */,
 				048C42F93FC101967D9300AD /* ContentView.swift */,
 				D53CBADE10BF72A0932153FC /* DestinationSmokeDiagnostic.swift */,
 				CBAF7E3D58A6C223D3EC7472 /* FileSelectionSmokeDiagnostic.swift */,
 				8B0A4B68008D8C2B7CF39536 /* ImportSmokeDiagnostic.swift */,
+				4E17CFBA01558D14681C4140 /* LibrarySidebar.swift */,
 				BD67FCA33EF6DF3F51EAA479 /* QBittorrentImportView.swift */,
 				4F06B0C08C777F5B932DE7F0 /* RefreshFetchSmokeDiagnostic.swift */,
 				5A660D6B059380F35BD414C5 /* RuTrackerLoginView.swift */,
-				3A7791A028569491691DB579 /* ToolbarSearchField.swift */,
+				131DA1217A97B6C6DD052925 /* SettingsView.swift */,
+				8079E214F33E6FF532753CB3 /* Theme.swift */,
 				F63FF72CE52643A16A9D9184 /* TorrentOutlineView.swift */,
 				40684BF63C5476AC99B09853 /* TorrentRefreshFetcher.swift */,
 				94EB84A07336E24F1644CA69 /* TorrentRefreshView.swift */,
+				F72B9FA02C0EA6465265DBDF /* TorrentTreeCells.swift */,
 				C4FD023AE4DE259EE7DB6066 /* TorrenzaApp.swift */,
+				E8FE91179A52A62D98D7D82F /* TransferInspectorView.swift */,
 				001C6E3FF4E74C24E4A00A83 /* UISmokeDiagnostic.swift */,
 				E0CD872AC480845DFA9A31F0 /* UIState.swift */,
+				E506EE1DA800643383444386 /* WorkspaceSplitView.swift */,
+				2C641982E05BF68D5E47F2B9 /* WorkspaceViews.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -188,21 +209,28 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5547BB7A6E1E2F33D2BAAF27 /* AddTorrentView.swift in Sources */,
 				AA97F3C846963A121C5B12A7 /* AppModel.swift in Sources */,
 				15E510228C56F31EB118EBBA /* ContentView.swift in Sources */,
 				9CE0E4234CAC684C7B191E47 /* DestinationSmokeDiagnostic.swift in Sources */,
 				4F6FE2112679A0C4986107E1 /* FileSelectionSmokeDiagnostic.swift in Sources */,
 				14C9DC4440F34369DA07A0D5 /* ImportSmokeDiagnostic.swift in Sources */,
+				7692F9AE89AE2CFCEDE041E6 /* LibrarySidebar.swift in Sources */,
 				004A9AACA3913E13066B10F8 /* QBittorrentImportView.swift in Sources */,
 				4D3CFB5EFC100A54E5DFFAF4 /* RefreshFetchSmokeDiagnostic.swift in Sources */,
 				0B4C6AAD134994529BF5B37F /* RuTrackerLoginView.swift in Sources */,
-				1B02FD79FB6093C292A46E28 /* ToolbarSearchField.swift in Sources */,
+				6150E175B92D443568DC083D /* SettingsView.swift in Sources */,
+				0ADAA89831BD18B4CE47D237 /* Theme.swift in Sources */,
 				9DCE1BF61B498F3C148D1175 /* TorrentOutlineView.swift in Sources */,
 				795A4720BA3D1774173F2C82 /* TorrentRefreshFetcher.swift in Sources */,
 				5AA7A3EADFFF009D72F6AB28 /* TorrentRefreshView.swift in Sources */,
+				FB7EAFA52C1A37E9E3767187 /* TorrentTreeCells.swift in Sources */,
 				0C9A3B01997414B686FFEAAF /* TorrenzaApp.swift in Sources */,
+				CE5D24A05E0A19A6F08D4E2B /* TransferInspectorView.swift in Sources */,
 				54000B8CF0D68EAF65EC05B7 /* UISmokeDiagnostic.swift in Sources */,
 				2DD4336AEBD56803612C6050 /* UIState.swift in Sources */,
+				A079EE41C63FEBBC059D78CC /* WorkspaceSplitView.swift in Sources */,
+				B85333073B3741ABA3079FA0 /* WorkspaceViews.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

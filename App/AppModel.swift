@@ -56,15 +56,33 @@ import UserNotifications
     var uiState = UIState() {
         didSet {
             if oldValue.appearance != uiState.appearance { applyAppearance() }
+            if oldValue.filter != uiState.filter { refreshVisibleCount() }
             scheduleUIStateSave()
         }
     }
     var didLoadUIState = false
+    /// The sidebar exposes every filter, including Needs Attention; the saved
+    /// preference is used as stored.
     var filter: TreeFilter {
-        get { let filter = TreeFilter(rawValue: uiState.filter) ?? .all; return filter == .attention ? .all : filter }
-        set { uiState.filter = (newValue == .attention ? TreeFilter.all : newValue).rawValue }
+        get { TreeFilter(rawValue: uiState.filter) ?? .all }
+        set { uiState.filter = newValue.rawValue }
     }
-    var search = ""
+    var search = "" {
+        didSet { if oldValue != search { refreshVisibleCount() } }
+    }
+    /// Torrents visible under the current filter and search. Drives the header
+    /// summary and the zero-result states; computed with the tree's shared
+    /// predicates so it always agrees with the outline.
+    private(set) var visibleTorrentCount = 0
+    func refreshVisibleCount() {
+        let filter = self.filter
+        let term = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        if term.isEmpty {
+            visibleTorrentCount = transfers.lazy.filter { filter.matches($0) }.count
+        } else {
+            visibleTorrentCount = transfers.lazy.filter { filter.matches($0) && TorrentTreeModel.matchesSearch($0, search: term) }.count
+        }
+    }
     var searchFocusRequest = 0
     var selectedNodes: [TorrentTreeNode] = []
     var selection: TorrentTreeNode? {
@@ -79,6 +97,28 @@ import UserNotifications
     var showInspector: Bool {
         get { uiState.inspectorVisible }
         set { uiState.inspectorVisible = newValue }
+    }
+    var isSidebarVisible: Bool {
+        get { uiState.effectiveSidebarVisible }
+        set { uiState.sidebarVisible = newValue }
+    }
+    var sidebarWidth: Double { uiState.effectiveSidebarWidth }
+    var inspectorWidth: Double { uiState.effectiveInspectorWidth }
+    /// Invalidates pending pane-size reports when the active profile changes so
+    /// a delayed layout callback cannot write into a newly selected profile.
+    @ObservationIgnored private var layoutToken = UUID()
+    var currentLayoutToken: UUID { layoutToken }
+    func reportSidebarWidth(_ width: Double, token: UUID) {
+        guard token == layoutToken, didLoadUIState, !isSwitchingProfile else { return }
+        let clamped = WorkspaceMetrics.clamp(width, min: WorkspaceMetrics.sidebarMinWidth, max: WorkspaceMetrics.sidebarMaxWidth)
+        guard uiState.sidebarWidth.map({ abs(clamped - $0) > 0.5 }) ?? true else { return }
+        uiState.sidebarWidth = clamped
+    }
+    func reportInspectorWidth(_ width: Double, token: UUID) {
+        guard token == layoutToken, didLoadUIState, !isSwitchingProfile else { return }
+        let clamped = WorkspaceMetrics.clamp(width, min: WorkspaceMetrics.inspectorMinWidth, max: WorkspaceMetrics.inspectorMaxWidth)
+        guard uiState.inspectorWidth.map({ abs(clamped - $0) > 0.5 }) ?? true else { return }
+        uiState.inspectorWidth = clamped
     }
     var confirmRemoval = false
     var deleteFiles = false
@@ -123,6 +163,18 @@ import UserNotifications
         return selectedNodes.compactMap(\.url).filter { seen.insert($0).inserted }
     }
     var activeCount: Int { transfers.filter { [.downloading, .seeding].contains($0.state) }.count }
+
+    /// Sidebar counts describe torrents in the complete profile snapshots,
+    /// independent of search, and reuse the tree's shared filter predicate.
+    var filterCounts: [TreeFilter: Int] {
+        var counts = Dictionary(uniqueKeysWithValues: TreeFilter.allCases.map { ($0, 0) })
+        for transfer in transfers {
+            for filter in TreeFilter.allCases where filter.matches(transfer) {
+                counts[filter, default: 0] += 1
+            }
+        }
+        return counts
+    }
 
     static func applicationModel() -> AppModel {
         #if DEBUG
@@ -213,6 +265,7 @@ import UserNotifications
                 }
                 previousStates = Dictionary(uniqueKeysWithValues: updates.map { ($0.id, $0.state) })
                 transfers = updates; statistics = sessionStatistics
+                refreshVisibleCount()
                 updateSleepActivity()
             }
         }
@@ -261,6 +314,7 @@ import UserNotifications
                 } catch {
                     isProfileReady = false; didLoadUIState = false
                     transfers = []; statistics = nil; selection = nil
+                    refreshVisibleCount()
                     updateSleepActivity()
                     throw TorrentError.storage("Could not open \(profile.name): \(activationError.localizedDescription). Could not reopen \(activeProfile.name): \(error.localizedDescription). Both profile databases were preserved.")
                 }
@@ -271,9 +325,11 @@ import UserNotifications
         engine = candidate; activeProfile = profile
         selection = nil; search = ""; previousStates = [:]; transfers = []; statistics = await candidate.statistics()
         tree.update([], search: "", filter: .all)
+        refreshVisibleCount()
         settings = await candidate.settings()
         uiState = nextUI
-        if uiState.filter == TreeFilter.attention.rawValue { uiState.filter = TreeFilter.all.rawValue }
+        // Pane-size callbacks captured by the previous profile are now stale.
+        layoutToken = UUID()
         didLoadUIState = true; isProfileReady = true
         profileDefaults.set(profile.id, forKey: "activeProfileID")
         for key in legacyKeys { profileDefaults.removeObject(forKey: key) }

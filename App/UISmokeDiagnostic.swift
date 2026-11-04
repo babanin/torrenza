@@ -19,6 +19,7 @@ import TorrentStorage
         let multiselect = arguments.contains("--ui-multiselect-check")
         let sortCheck = arguments.contains("--ui-sort-check")
         let fileSelectionCheck = arguments.contains("--ui-file-selection-check")
+        let workspaceCheck = arguments.contains("--ui-workspace-check")
         let refreshProgress = arguments.contains("--ui-refresh-progress")
         let refreshResultCapture = arguments.contains("--ui-refresh-result")
         let refreshSelection = arguments.contains("--ui-refresh-selection")
@@ -61,6 +62,7 @@ import TorrentStorage
                 completedBytes: 420_000_000, selectedBytes: 1_200_000_000, downloadRate: 4_200_000, swarm: swarm
             ))
         }
+        refreshVisibleCount()
         Task { @MainActor in
             var captured = false
             defer { if arguments.contains("--ui-exit") { exit(captured ? 0 : 1) } }
@@ -105,6 +107,10 @@ import TorrentStorage
                     fileSelectionResult = (false, ["FAIL: File selection check: Torrent outline was not found"])
                 }
             }
+            var workspaceResult: (passed: Bool, lines: [String]) = (true, [])
+            if workspaceCheck {
+                workspaceResult = await checkDebugWorkspace(window: window, view: view)
+            }
             let importChecksPassed = !qbImport || installDebugQBittorrentImport()
             if addTorrent { installDebugAddTorrent() }
             var refreshResult: (passed: Bool, lines: [String]) = (true, [])
@@ -117,6 +123,7 @@ import TorrentStorage
             }
             try? await Task.sleep(for: .milliseconds(600))
             let addTorrentResult = addTorrent ? await checkDebugAddTorrent(window: window) : (passed: true, lines: [String]())
+            let qbSheetResult = qbImport ? await checkDebugQBittorrentSheet(window: window) : (passed: true, lines: [String]())
             let contentToCapture = qbImport || addTorrent || refreshCheck ? (window.attachedSheet?.contentView ?? view) : view
             let captureView = contentToCapture.superview ?? contentToCapture
             captureView.layoutSubtreeIfNeeded(); captureView.displayIfNeeded()
@@ -134,7 +141,9 @@ import TorrentStorage
             geometry.append(contentsOf: sortResult.lines)
             geometry.append(contentsOf: fileSelectionResult.lines)
             geometry.append(contentsOf: addTorrentResult.lines)
+            geometry.append(contentsOf: qbSheetResult.lines)
             geometry.append(contentsOf: refreshResult.lines)
+            geometry.append(contentsOf: workspaceResult.lines)
             @MainActor func describe(_ node: NSView) -> String {
                 "frame: \(node.convert(node.bounds, to: captureView)), hidden: \(node.isHiddenOrHasHiddenAncestor), visible rect: \(node.visibleRect)"
             }
@@ -149,6 +158,12 @@ import TorrentStorage
             }
             var searchField: NSSearchField?
             @MainActor func inspectControls(_ child: NSView) {
+                if let split = child as? NSSplitView {
+                    let panes = split.arrangedSubviews.map { pane in
+                        "frame=\(split.convert(pane.frame, to: captureView)), hidden=\(pane.isHidden), intrinsic=\(pane.intrinsicContentSize)"
+                    }
+                    geometry.append("Split: dividers=\(split.dividerThickness), bounds=\(split.convert(split.bounds, to: captureView)), panes=\(panes)")
+                }
                 if let segmented = child as? NSSegmentedControl {
                     let labels = (0..<segmented.segmentCount).map { segmented.label(forSegment: $0) ?? "" }
                     geometry.append("Segments: \(labels), intrinsic width: \(segmented.intrinsicContentSize.width), \(describe(segmented))")
@@ -187,7 +202,8 @@ import TorrentStorage
                     if !condition { searchChecksPassed = false }
                 }
                 if let field = searchField {
-                    check(!field.isHiddenOrHasHiddenAncestor && !field.visibleRect.isEmpty, "Search field is visible in the toolbar")
+                    check(!field.isHiddenOrHasHiddenAncestor && !field.visibleRect.isEmpty, "Search field is visible in the central panel header")
+                    check(field.frame.width >= 220 && field.frame.width <= 300, "Search field keeps its compact width")
                     field.stringValue = "Guide"
                     let sentGuide = field.sendAction(field.action, to: field.target)
                     check(sentGuide && search == "Guide", "Native search action updates the model")
@@ -205,7 +221,7 @@ import TorrentStorage
                     check(field.stringValue.isEmpty, "Model reset clears the native search field")
                     window.makeFirstResponder(nil)
                 } else {
-                    check(false, "Search field was not found in the toolbar")
+                    check(false, "Search field was not found in the panel header")
                 }
             }
             var appearanceChecksPassed = true
@@ -217,7 +233,7 @@ import TorrentStorage
             try? geometry.joined(separator: "\n").write(to: directory.appendingPathComponent(basename + ".txt"), atomically: true, encoding: .utf8)
             let importSheetVisible = !qbImport || window.attachedSheet != nil
             if qbImport { print("\(importSheetVisible ? "PASS" : "FAIL"): qBittorrent import sheet is visible") }
-            captured = searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed && sortResult.passed && fileSelectionResult.passed && uploadChecksPassed && addTorrentResult.passed && refreshResult.passed
+            captured = searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed && sortResult.passed && fileSelectionResult.passed && uploadChecksPassed && addTorrentResult.passed && qbSheetResult.passed && refreshResult.passed && workspaceResult.passed
             print("UI snapshot: \(output.path)")
         }
     }
@@ -907,6 +923,276 @@ import TorrentStorage
         return (passed, lines)
     }
 
+    /// Exercises sidebar counts, Needs Attention, zero-result layouts, search
+    /// focus, layout persistence, and progress-cell reuse on the fixture.
+    private func checkDebugWorkspace(window: NSWindow, view: NSView) async -> (passed: Bool, lines: [String]) {
+        var passed = true
+        var lines: [String] = []
+        func check(_ condition: Bool, _ message: String) {
+            let line = "\(condition ? "PASS" : "FAIL"): Workspace check: \(message)"
+            lines.append(line); print(line)
+            if !condition { passed = false }
+        }
+        func settle() async { try? await Task.sleep(for: .milliseconds(200)) }
+        @MainActor func findOutline(_ root: NSView) -> NSOutlineView? {
+            if let outline = root as? NSOutlineView { return outline }
+            for child in root.subviews { if let outline = findOutline(child) { return outline } }
+            return nil
+        }
+        @MainActor func findSearchField(_ root: NSView) -> NSSearchField? {
+            if let field = root as? NSSearchField { return field }
+            for child in root.subviews { if let field = findSearchField(child) { return field } }
+            return nil
+        }
+
+        let originalTransfers = transfers
+        let originalFilter = filter
+        let originalSearch = search
+        let originalSidebarVisible = isSidebarVisible
+        let originalInspectorVisible = showInspector
+        defer {
+            transfers = originalTransfers
+            filter = originalFilter
+            search = originalSearch
+            isSidebarVisible = originalSidebarVisible
+            showInspector = originalInspectorVisible
+            refreshVisibleCount()
+        }
+
+        // Sidebar counts reuse the tree's shared predicate over complete snapshots.
+        let counts = filterCounts
+        for filter in TreeFilter.allCases {
+            let expected = transfers.filter { filter.matches($0) }.count
+            check(counts[filter] == expected, "Sidebar count for \(filter.rawValue) equals the shared predicate count (\(expected))")
+        }
+
+        // Needs Attention is a real, persistable filter.
+        filter = .attention
+        await settle()
+        check(uiState.filter == TreeFilter.attention.rawValue, "Needs Attention selection persists in interface preferences")
+        check(visibleTorrentCount == transfers.filter { TreeFilter.attention.matches($0) }.count, "Needs Attention narrows the visible-transfer summary")
+        if let outline = findOutline(view) {
+            let visibleStates = (0..<outline.numberOfRows).compactMap { row -> TransferState? in
+                guard let node = outline.item(atRow: row) as? TorrentTreeNode, case .torrent(let id) = node.kind else { return nil }
+                return transfers.first { $0.id == id }?.state
+            }
+            check(!visibleStates.isEmpty && visibleStates.allSatisfy { [.unavailable, .failed].contains($0) }, "Needs Attention shows only unavailable and failed torrents")
+        } else {
+            check(false, "Needs Attention keeps the tree visible for its matches")
+        }
+
+        // Zero-result filter and search layouts.
+        filter = .paused
+        await settle()
+        check(transfers.allSatisfy { $0.state != .paused } && findOutline(view) == nil, "A filter with zero transfers replaces the tree with its empty state")
+        filter = .all
+        await settle()
+        check(findOutline(view) != nil, "Show All Transfers restores the tree")
+        search = "definitely-no-such-torrent-xyz"
+        await settle()
+        check(findOutline(view) == nil, "A search without matches replaces the tree with its empty state")
+        search = ""
+        await settle()
+        check(findOutline(view) != nil, "Clearing search restores the tree")
+        // The empty-state swap recreates the outline; restore full expansion so
+        // later checks and the main capture see the same rows as before.
+        findOutline(view)?.expandItem(nil, expandChildren: true)
+        await settle()
+
+        // Cmd-F focuses the relocated search field.
+        if let field = findSearchField(view) {
+            searchFocusRequest += 1
+            await settle()
+            check(field.currentEditor() != nil, "Cmd-F focus request activates the panel header search field")
+            window.makeFirstResponder(nil)
+        } else {
+            check(false, "Panel header search field is present")
+        }
+
+        // Sidebar toggle keeps the tree and updates the saved preference.
+        isSidebarVisible = false
+        await settle()
+        check(uiState.sidebarVisible == false && findOutline(view) != nil, "Hiding the sidebar keeps the tree visible and records the preference")
+        isSidebarVisible = true
+        await settle()
+        check(uiState.sidebarVisible == true && findOutline(view) != nil, "Showing the sidebar restores it without changing the filter")
+
+        // Split resizing reports and persists pane widths.
+        @MainActor func findSplit(_ root: NSView) -> NSSplitView? {
+            if let split = root as? NSSplitView { return split }
+            for child in root.subviews { if let split = findSplit(child) { return split } }
+            return nil
+        }
+        if let split = findSplit(view) {
+            // Isolate model-side reporting from the pane hook.
+            reportSidebarWidth(240, token: currentLayoutToken)
+            try? await Task.sleep(for: .milliseconds(100))
+            lines.append("Model report probe: saved=\(uiState.sidebarWidth ?? -1), effective=\(sidebarWidth)")
+            split.setPosition(240, ofDividerAt: 0)
+            try? await Task.sleep(for: .milliseconds(400))
+            lines.append("Split drag probe: pane=\(split.arrangedSubviews.first?.bounds.width ?? -1), model=\(sidebarWidth), saved=\(uiState.sidebarWidth ?? -1), dividers=\(split.arrangedSubviews.count)")
+            let sidebarPane = split.arrangedSubviews.first
+            check(abs((sidebarPane?.bounds.width ?? 0) - 240) < 2 && abs(sidebarWidth - 240) < 1.5,
+                  "Dragging the sidebar divider to 240 reports and persists the width")
+            split.setPosition(150, ofDividerAt: 0)
+            try? await Task.sleep(for: .milliseconds(400))
+            lines.append("Split clamp probe: pane=\(split.arrangedSubviews.first?.bounds.width ?? -1), model=\(sidebarWidth)")
+            check(abs((split.arrangedSubviews.first?.bounds.width ?? 0) - 184) < 2 && abs(sidebarWidth - 184) < 1.5,
+                  "Pane minimum clamps the sidebar divider and persists 184")
+            split.setPosition(208, ofDividerAt: 0)
+            try? await Task.sleep(for: .milliseconds(400))
+            check(abs(sidebarWidth - 208) < 1.5, "Restoring the default sidebar width persists 208")
+        } else {
+            check(false, "Workspace split is present for resizing checks")
+        }
+
+        // Inspector pane opens at its saved width alongside the tree.
+        let originalSize = window.frame.size
+        window.setContentSize(NSSize(width: 1000, height: 480))
+        showInspector = true
+        await settle()
+        if let split = findSplit(view), split.arrangedSubviews.count > 2 {
+            let inspectorPane = split.arrangedSubviews.last
+            check(inspectorPane?.isHidden == false && abs((inspectorPane?.bounds.width ?? 0) - inspectorWidth) < 2,
+                  "Inspector pane appears at its saved width (\(Int(inspectorWidth)) points)")
+        }
+        check(findOutline(view) != nil, "Inspector and tree both fit at the 1000-point minimum width")
+        window.setContentSize(originalSize)
+        showInspector = false
+        await settle()
+
+        // Layout preferences: legacy decode, nonfinite rejection, clamping.
+        do {
+            let legacyJSON = Data(#"{"version":1,"notificationsEnabled":false,"filter":"All Transfers","inspectorVisible":false,"expandedNodeIDs":[],"hasSavedExpansion":false,"selectedNodeID":"torrent:legacy","columnOrder":[],"columnWidths":{}}"#.utf8)
+            let legacy = try JSONDecoder().decode(UIState.self, from: legacyJSON)
+            check(legacy.effectiveSidebarVisible && legacy.effectiveSidebarWidth == 208 && legacy.effectiveInspectorWidth == 304,
+                  "Legacy state without layout fields restores visible sidebar at 208 with a 304-point inspector")
+            var state = legacy
+            state.sidebarWidth = .nan
+            state.inspectorWidth = 1e9
+            check(state.effectiveSidebarWidth == 208 && state.effectiveInspectorWidth == 420,
+                  "Nonfinite and oversized widths are rejected or clamped")
+            state.sidebarWidth = 50
+            state.inspectorWidth = 100
+            check(state.effectiveSidebarWidth == 184 && state.effectiveInspectorWidth == 280,
+                  "Undersized widths clamp to pane minima")
+            let decoded = try JSONDecoder().decode(UIState.self, from: JSONEncoder().encode(state))
+            check(decoded.effectiveSidebarWidth == 184 && decoded.effectiveInspectorWidth == 280, "Clamped widths round-trip")
+        } catch {
+            check(false, "Layout preference serialization: \(error.localizedDescription)")
+        }
+
+        // Progress cell reuse resets all visual state between rows.
+        findOutline(view)?.expandItem(nil, expandChildren: true)
+        await settle()
+        if let outline = findOutline(view), let column = outline.tableColumns.first(where: { $0.identifier.rawValue == "progress" }),
+           let coordinator = outline.delegate as? TorrentOutlineView.Coordinator {
+            let nodes = (0..<outline.numberOfRows).compactMap { outline.item(atRow: $0) as? TorrentTreeNode }
+            let torrentNode = nodes.first { $0.id == "torrent:ui-a" }
+            let offlineNode = nodes.first { $0.id == "torrent:ui-offline" }
+            let folderNode = nodes.first { $0.kind == .folder && $0.fileIndices != nil }
+            if let torrentNode, let offlineNode, let folderNode {
+                let torrentCell = coordinator.outlineView(outline, viewFor: column, item: torrentNode) as? TorrentProgressCellView
+                let expectedText = "Downloading · \(Int(transfers.first { $0.id == "ui-a" }!.progress * 100))%"
+                check(torrentCell?.textField?.stringValue == expectedText, "Progress cell renders status and percentage for a downloading torrent")
+                check(torrentCell?.track.isHidden == false, "Determinate rows show the compact track")
+                // The same identifier dequeued for a different row must fully reset.
+                let offlineCell = coordinator.outlineView(outline, viewFor: column, item: offlineNode) as? TorrentProgressCellView
+                let offlineText = "Unavailable · \(Int(transfers.first { $0.id == "ui-offline" }!.progress * 100))%"
+                check(offlineCell?.textField?.stringValue == offlineText && offlineCell?.track.isHidden == false,
+                      "Reused progress cell reconfigures for an unavailable torrent")
+                let folderCell = coordinator.outlineView(outline, viewFor: column, item: folderNode) as? TorrentProgressCellView
+                check(folderCell != nil && folderCell?.track.isHidden == false, "Folder progress restores the compact track")
+                // Text-only statuses must clear the track on reuse.
+                let direct = TorrentProgressCellView()
+                direct.configure(fraction: nil, text: "No files selected", tint: .labelColor)
+                direct.setTrackHidden(true)
+                check(direct.track.isHidden && direct.textField?.stringValue == "No files selected", "Text-only status hides the track")
+                direct.setTrackHidden(false)
+                direct.configure(fraction: 0.42, text: "Downloading · 42%", tint: .labelColor)
+                check(!direct.track.isHidden && direct.track.fraction == 0.42, "Determinate status restores the track and fraction")
+            } else {
+                check(false, "Fixture exposes torrent, unavailable, and folder rows for cell reuse")
+            }
+        } else {
+            check(false, "Progress column and coordinator are available")
+        }
+
+        // Long inspector content stays laid out without disturbing the tree.
+        window.setContentSize(NSSize(width: 1000, height: 480))
+        showInspector = true
+        await settle()
+        findOutline(view)?.expandItem(nil, expandChildren: true)
+        if let fixtureIndex = transfers.firstIndex(where: { $0.id == "ui-a" }) {
+            let longName = String(repeating: "Long Descriptive Collection Name ", count: 4)
+            transfers[fixtureIndex].name = longName
+            transfers[fixtureIndex].error = String(repeating: "Storage warning with a long explanation. ", count: 3)
+            transfers[fixtureIndex].trackers = ["https://tracker.example.test/announce?very_long_query_parameter=" + String(repeating: "abcdef0123456789", count: 8)]
+            refreshVisibleCount()
+            // Let the name change settle its structural reload, then re-expand
+            // (fixture mode does not record expansion) and select the row.
+            await settle()
+            findOutline(view)?.expandItem(nil, expandChildren: true)
+            if let outline = findOutline(view),
+               let row = (0..<outline.numberOfRows).first(where: { (outline.item(atRow: $0) as? TorrentTreeNode)?.id == "torrent:ui-a" }) {
+                outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                await settle()
+                let coordinator = outline.delegate as? TorrentOutlineView.Coordinator
+                lines.append("Inspector probe: selectedRows=\(outline.selectedRowIndexes.count), modelNodes=\(selectedNodes.map(\.id)), canInteract=\(coordinator?.canInteract ?? false), tree=\(findOutline(view) != nil)")
+                check(selectedTransfer?.name == longName && findOutline(view) != nil,
+                      "Inspector renders a long transfer name alongside the tree without relayout failures")
+            } else {
+                check(false, "Torrent row is selectable for the long-content inspector check")
+            }
+        }
+        showInspector = false
+        await settle()
+        // Restore the fixture inline so a later structural refresh cannot leave
+        // the tree collapsed for the remaining checks and the final capture.
+        transfers = originalTransfers
+        filter = originalFilter
+        search = originalSearch
+        showInspector = originalInspectorVisible
+        isSidebarVisible = originalSidebarVisible
+        refreshVisibleCount()
+        await settle()
+        findOutline(view)?.expandItem(nil, expandChildren: true)
+        window.setContentSize(originalSize)
+        await settle()
+        return (passed, lines)
+    }
+
+    /// The qBittorrent import sheet is resizable with visible actions at its minimum size.
+    private func checkDebugQBittorrentSheet(window: NSWindow) async -> (passed: Bool, lines: [String]) {
+        var passed = true
+        var lines: [String] = []
+        func check(_ condition: Bool, _ message: String) {
+            let line = "\(condition ? "PASS" : "FAIL"): qBittorrent sheet check: \(message)"
+            lines.append(line); print(line)
+            if !condition { passed = false }
+        }
+        guard let sheet = window.attachedSheet, let content = sheet.contentView else {
+            check(false, "Import sheet is visible")
+            return (passed, lines)
+        }
+        check(sheet.styleMask.contains(.resizable), "Import sheet allows user resizing")
+        let minimum = sheet.contentMinSize
+        lines.append("Import sheet minimum content size: \(minimum)")
+        check(minimum.width >= 820 && minimum.height >= 560, "Minimum content size is at least 820 × 560")
+        let enlarged = NSSize(width: 1100, height: 720)
+        sheet.setContentSize(enlarged)
+        try? await Task.sleep(for: .milliseconds(250))
+        content.layoutSubtreeIfNeeded()
+        check(abs(content.bounds.width - enlarged.width) < 2 && abs(content.bounds.height - enlarged.height) < 2, "Larger sizes are honored")
+        sheet.setContentSize(minimum)
+        try? await Task.sleep(for: .milliseconds(250))
+        content.layoutSubtreeIfNeeded()
+        check(abs(content.bounds.width - minimum.width) < 2 && abs(content.bounds.height - minimum.height) < 2, "Sheet returns to its minimum size with actions visible")
+        sheet.setContentSize(NSSize(width: 940, height: 620))
+        try? await Task.sleep(for: .milliseconds(150))
+        return (passed, lines)
+    }
+
     private func installDebugQBittorrentImport() -> Bool {
         let source = URL(fileURLWithPath: "/Users/fixture/Library/Application Support/qBittorrent/BT_backup", isDirectory: true)
         let destination = URL(fileURLWithPath: "/Volumes/Storage/torrents", isDirectory: true)
@@ -1119,14 +1405,21 @@ import TorrentStorage
                 try await Task.sleep(for: .milliseconds(300))
                 let container = view.superview ?? view
                 container.layoutSubtreeIfNeeded()
+                var searchField: NSSearchField?
+                var outlineFound = false
                 func inspect(_ node: NSView) throws {
-                    if let control = node as? NSSegmentedControl, control.segmentCount == 5 {
-                        try require(control.isEnabled && control.intrinsicContentSize.width <= control.frame.width + 1, "Five filter buttons remain enabled and fit at minimum window width")
-                        lines.append("Filter frame: \(control.convert(control.bounds, to: container))")
+                    if let field = node as? NSSearchField {
+                        searchField = field
+                        lines.append("Search frame: \(field.convert(field.bounds, to: container))")
                     }
+                    if node is NSOutlineView { outlineFound = true }
                     for child in node.subviews { try inspect(child) }
                 }
                 try inspect(container)
+                try require(searchField?.isEnabled == true && (searchField?.frame.width ?? 0) > 100,
+                            "Header search remains enabled and usable at minimum window width")
+                // Empty profiles show the Add Torrent invitation instead of the tree.
+                lines.append("Torrent outline present at minimum width: \(outlineFound)")
                 if let bitmap = container.bitmapImageRepForCachingDisplay(in: container.bounds) {
                     container.cacheDisplay(in: container.bounds, to: bitmap)
                     if let png = bitmap.representation(using: .png, properties: [:]) {
