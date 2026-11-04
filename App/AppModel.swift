@@ -84,6 +84,16 @@ import UserNotifications
         }
     }
     var searchFocusRequest = 0
+    /// View → Reset Column Widths: outlines observe and apply the shared
+    /// defaults to the live table without a reload.
+    var columnWidthResetRequest = 0
+    func resetColumnWidths() {
+        guard isProfileReady, !isSwitchingProfile else { return }
+        var state = uiState
+        state.columnWidths = TorrentColumns.defaultWidths
+        uiState = state
+        columnWidthResetRequest += 1
+    }
     var selectedNodes: [TorrentTreeNode] = []
     var selection: TorrentTreeNode? {
         get { selectedNodes.count == 1 ? selectedNodes.first : nil }

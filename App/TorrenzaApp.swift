@@ -38,7 +38,11 @@ import SwiftUI
                 Button("Reveal in Finder") { model.revealSelection() }.disabled(model.selectedURLs.isEmpty).keyboardShortcut("r", modifiers: [.command, .shift])
                 Button("Remove…") { model.confirmRemoval = true }.disabled(!model.canRemoveSelection).keyboardShortcut(.delete, modifiers: .command)
             }
-            CommandGroup(after: .toolbar) { Button("Toggle Inspector") { model.showInspector.toggle() }.keyboardShortcut("i", modifiers: [.command, .option]) }
+            CommandGroup(after: .toolbar) {
+                Button("Toggle Inspector") { model.showInspector.toggle() }.keyboardShortcut("i", modifiers: [.command, .option])
+                Button("Reset Column Widths", action: model.resetColumnWidths)
+                    .disabled(!model.isProfileReady || model.isSwitchingProfile)
+            }
         }
         Settings { SettingsView(model: model) }
     }

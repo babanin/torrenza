@@ -3,6 +3,71 @@ import SwiftUI
 import TorrentCore
 import TorrentEngine
 
+/// Shared column definitions for initial construction, width reset, and
+/// diagnostics. Identifiers are unchanged and stable.
+enum TorrentColumns {
+    struct Definition {
+        let id: String
+        let title: String
+        let defaultWidth: Double
+        let minimumWidth: Double
+    }
+
+    static let all: [Definition] = [
+        Definition(id: "name", title: "Name", defaultWidth: 280, minimumWidth: 180),
+        Definition(id: "added", title: "Added", defaultWidth: 160, minimumWidth: 65),
+        Definition(id: "size", title: "Size", defaultWidth: 90, minimumWidth: 65),
+        Definition(id: "progress", title: "Progress / Status", defaultWidth: 184, minimumWidth: 144),
+        Definition(id: "download", title: "Download", defaultWidth: 95, minimumWidth: 65),
+        Definition(id: "upload", title: "Upload", defaultWidth: 95, minimumWidth: 65),
+        Definition(id: "uploaded", title: "Uploaded", defaultWidth: 110, minimumWidth: 65),
+        Definition(id: "seeds", title: "Seeds", defaultWidth: 85, minimumWidth: 65),
+        Definition(id: "peers", title: "Peers", defaultWidth: 85, minimumWidth: 65)
+    ]
+
+    static let defaultWidths: [String: Double] = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0.defaultWidth) })
+}
+
+/// Soft native header cell: panel background, hairline bottom border, faint
+/// vertical separators, and restrained pressed feedback, all painted in
+/// interior drawing. Overriding `draw(withFrame:in:)` — even as a passthrough
+/// — switches the enclosing scroll view into a path that offscreen captures
+/// cannot rasterize, so the interior hook carries the styling instead: the
+/// default bezel is covered by the opaque panel fill, native title drawing
+/// runs through the inherited interior, and sort indicators keep their native
+/// geometry and appearance.
+final class TorrentTableHeaderCell: NSTableHeaderCell {
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        // Interior drawing is clipped to this inset frame, so the styling
+        // lives inside it; the native bezel keeps the header's outer edges.
+        // Overriding `draw(withFrame:in:)` — even as a passthrough — switches
+        // the enclosing scroll view into a path offscreen captures cannot
+        // rasterize, so the interior hook is the safe place for styling.
+        let appearance = controlView.effectiveAppearance
+        // One-physical-pixel strokes on the current display.
+        let scale = max(1, controlView.window?.backingScaleFactor ?? 1)
+        let hairline = 1 / scale
+        // Opaque panel surface replaces the interior of the default bezel.
+        Palette.panel.resolved(in: appearance).setFill()
+        cellFrame.fill()
+        // Restrained pressed feedback while a header is clicked.
+        if isHighlighted {
+            Palette.rowHover.resolved(in: appearance).setFill()
+            cellFrame.fill()
+        }
+        // Vertical separators sit at the cell's leading edge, inset from the
+        // top and bottom; Increase Contrast restores them to full strength.
+        let border = Palette.border.resolved(in: appearance)
+        let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        border.withAlphaComponent(contrast ? 1.0 : 0.35).setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 5,
+                                  width: hairline,
+                                  height: max(0, cellFrame.height - 10))).fill()
+        // Native title drawing; sort indicators stay native.
+        super.drawInterior(withFrame: cellFrame, in: controlView)
+    }
+}
+
 struct TorrentOutlineView: NSViewRepresentable {
     @Bindable var model: AppModel
     var snapshots: [TransferSnapshot]
@@ -26,11 +91,22 @@ struct TorrentOutlineView: NSViewRepresentable {
         outline.backgroundColor = .clear
         outline.selectionHighlightStyle = .regular
         outline.allowsMultipleSelection = true; outline.autosaveTableColumns = false
-        outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
-        for (id, title, width) in [("name", "Name", 320.0), ("added", "Added", 160.0), ("size", "Size", 90.0), ("progress", "Progress / Status", 184.0), ("download", "Download", 95.0), ("upload", "Upload", 95.0), ("uploaded", "Uploaded", 110.0), ("seeds", "Seeds", 85.0), ("peers", "Peers", 85.0)] {
-            let column = NSTableColumn(identifier: .init(id)); column.title = title; column.width = width; column.minWidth = id == "name" ? 180 : id == "progress" ? 144 : 65
-            column.headerCell.font = .systemFont(ofSize: 11, weight: .semibold)
-            column.sortDescriptorPrototype = NSSortDescriptor(key: id, ascending: id == "name")
+        // The viewport changes without rewriting column widths; users resize
+        // columns manually and narrow layouts scroll horizontally. The
+        // outline column must also stop auto-fitting expanded content.
+        outline.columnAutoresizingStyle = .noColumnAutoresizing
+        outline.autoresizesOutlineColumn = false
+        for definition in TorrentColumns.all {
+            let column = NSTableColumn(identifier: .init(definition.id))
+            column.title = definition.title
+            column.width = definition.defaultWidth
+            column.minWidth = definition.minimumWidth
+            column.resizingMask = .userResizingMask
+            let headerCell = TorrentTableHeaderCell(textCell: definition.title)
+            headerCell.font = .systemFont(ofSize: 11, weight: .semibold)
+            column.headerCell = headerCell
+            column.sortDescriptorPrototype = NSSortDescriptor(key: definition.id, ascending: definition.id == "name")
+            let id = definition.id
             if id == "seeds" { column.headerToolTip = "Connected seeds / tracker-reported seeds. Estimates are not summed across trackers." }
             if id == "peers" { column.headerToolTip = "All connected peers, including seeds / tracker-reported total peers." }
             if id == "uploaded" { column.headerToolTip = "Total payload uploaded, including repeated uploads. * means since per-file tracking started; earlier uploads cannot be attributed to individual files." }
@@ -71,6 +147,8 @@ struct TorrentOutlineView: NSViewRepresentable {
         let profileID: String?
         var belongsToActiveProfile: Bool { model.activeProfile?.id == profileID }
         var canInteract: Bool { belongsToActiveProfile && model.isProfileReady && !model.isSwitchingProfile }
+        /// The width-reset request this outline has already applied.
+        var appliedWidthResetRequest = 0
         var persistsState: Bool {
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ui-fixture") { return false }
@@ -89,6 +167,9 @@ struct TorrentOutlineView: NSViewRepresentable {
             }
             if model.didLoadUIState && !loadedState {
                 loadedState = true; expanded = Set(model.uiState.expandedNodeIDs); selectedNodeIDs = Set(model.uiState.effectiveSelectedNodeIDs)
+                // A new coordinator adopts the current reset request and
+                // restores widths through the normal path above.
+                appliedWidthResetRequest = model.columnWidthResetRequest
                 restoring = true
                 var columnOrder = model.uiState.columnOrder
                 if !columnOrder.isEmpty && !columnOrder.contains("added") {
@@ -102,6 +183,21 @@ struct TorrentOutlineView: NSViewRepresentable {
                     if let width = model.uiState.columnWidths[column.identifier.rawValue], width.isFinite { column.width = max(column.minWidth, min(1500, width)) }
                 }
                 restoring = false; generation = -1
+            }
+            // View → Reset Column Widths applies the shared defaults to the
+            // live outline. Persistence callbacks are suppressed while widths
+            // are assigned; the tree is not reloaded and the outline is not
+            // reconstructed.
+            if model.columnWidthResetRequest != appliedWidthResetRequest {
+                appliedWidthResetRequest = model.columnWidthResetRequest
+                let previousRestoring = restoring
+                restoring = true
+                for column in outline.tableColumns {
+                    if let definition = TorrentColumns.all.first(where: { $0.id == column.identifier.rawValue }) {
+                        column.width = definition.defaultWidth
+                    }
+                }
+                restoring = previousRestoring
             }
             let descriptors = model.uiState.sortOrder.map { [NSSortDescriptor(key: $0.column.rawValue, ascending: $0.ascending)] } ?? []
             if outline.sortDescriptors != descriptors {
@@ -204,7 +300,10 @@ struct TorrentOutlineView: NSViewRepresentable {
             case "name":
                 value = node.name; tooltip = node.url?.path ?? node.name
                 cell.imageView?.image = icon(for: node, torrent: torrent)
-                cell.textField?.font = .systemFont(ofSize: 13, weight: isTorrentRow ? .semibold : .regular)
+                // Torrent names are one weight heavier than folder and file
+                // names; every configuration sets the font so reused cells
+                // cannot retain another node type's weight.
+                cell.textField?.font = .systemFont(ofSize: 13, weight: isTorrentRow ? .medium : .regular)
                 let badgeState = torrent?.isMultiFile == false ? torrent?.state : nil
                 (cell as? TorrentNameCellView)?.setTransferState(badgeState)
                 configureSelectionControl(in: cell, for: node)
