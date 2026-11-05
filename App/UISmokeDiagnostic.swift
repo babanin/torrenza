@@ -1973,6 +1973,21 @@ import TorrentStorage
         draft.selectVisible()
         check(draft.selection == [String(repeating: "a", count: 40)], "Filtered selection includes the eligible torrent")
         draft.search = ""
+        draft.statusFilter = .alreadyImported
+        check(draft.visibleCandidates.map(\.id) == [existingID], "Already imported filter shows only existing torrents")
+        draft.statusFilter = .readyForImport
+        check(draft.visibleCandidates.map(\.id) == [String(repeating: "a", count: 40)], "Ready filter excludes existing and unsupported torrents")
+        draft.search = "Linux"
+        check(draft.visibleCandidates.isEmpty, "Search and status filters combine")
+        draft.search = ""
+        draft.selection = []
+        draft.selectVisible()
+        check(draft.selection == [String(repeating: "a", count: 40)], "Select Shown respects the status filter")
+        draft.verifyExistingData = false
+        check(draft.visibleCandidates.count == 1, "Ready filter also includes saved-progress imports")
+        draft.verifyExistingData = true
+        draft.statusFilter = .all
+        check(draft.visibleCandidates.count == 3, "All statuses restores every row")
         check(draft.verifyExistingData, "Existing-data verification is enabled by default")
         draft.verifyExistingData = false
         check(draft.status(draft.candidates[0]) == "Ready to import", "Unchecked verification uses saved-progress import status")

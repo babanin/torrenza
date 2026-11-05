@@ -15,6 +15,14 @@ import TorrentEngine
     var stopRequested = false
     var error: String?
     var outcomes: [String: String] = [:]
+    enum StatusFilter: String, CaseIterable, Identifiable {
+        case all = "All statuses"
+        case alreadyImported = "Already imported"
+        case readyForImport = "Ready for import"
+
+        var id: Self { self }
+    }
+    var statusFilter: StatusFilter = .all
     var search = ""
     var progress = ""
     var importedCount = 0
@@ -29,8 +37,16 @@ import TorrentEngine
     init(existingIDs: Set<String>) { self.existingIDs = existingIDs }
 
     var visibleCandidates: [QBittorrentImportCandidate] {
-        guard !search.isEmpty else { return candidates }
-        return candidates.filter { $0.name.localizedStandardContains(search) || ($0.destination?.path.localizedStandardContains(search) ?? false) }
+        candidates.filter { candidate in
+            let matchesStatus: Bool
+            switch statusFilter {
+            case .all: matchesStatus = true
+            case .alreadyImported: matchesStatus = existingIDs.contains(candidate.id)
+            case .readyForImport: matchesStatus = canSelect(candidate)
+            }
+            return matchesStatus && (search.isEmpty || candidate.name.localizedStandardContains(search)
+                || (candidate.destination?.path.localizedStandardContains(search) ?? false))
+        }
     }
     func canSelect(_ candidate: QBittorrentImportCandidate) -> Bool {
         candidate.issue == nil && !existingIDs.contains(candidate.id)
@@ -235,6 +251,12 @@ struct QBittorrentImportView: View {
             }
             HStack(spacing: WorkspaceMetrics.space2) {
                 TextField("Search torrents or destinations", text: $draft.search).textFieldStyle(.roundedBorder)
+                Picker("Status", selection: $draft.statusFilter) {
+                    ForEach(QBittorrentImportDraft.StatusFilter.allCases) { filter in
+                        Text(filter.rawValue).tag(filter)
+                    }
+                }
+                .fixedSize()
                 Text("\(draft.selection.count) selected / \(draft.candidates.count)")
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
