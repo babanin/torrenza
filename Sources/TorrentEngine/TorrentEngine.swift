@@ -160,6 +160,11 @@ public actor TorrentEngine {
     var listeningPort: UInt16 = 0
     let peerID: Data
     var observers: [UUID: AsyncStream<[TransferSnapshot]>.Continuation] = [:]
+    var storageRecoveryTask: Task<Void, Never>?
+    var storageRecoveryTaskID: UUID?
+    var storageRecoverySuspended = false
+    var storageRecoveryInProgress = false
+    var storageRecoveryCandidates: [String] = []
     var ticker: Task<Void, Never>?
     var lastCheckpoint = Date()
     var suspended: Set<String> = []
@@ -328,6 +333,7 @@ public actor TorrentEngine {
         }
         session.record.wantedRunning = true
         session.record.quarantineError = nil
+        session.record.recoveryWantedRunning = nil
         session.snapshot.error = nil
         if ![.downloading, .seeding, .checking].contains(session.snapshot.state) { session.snapshot.state = .queued }
         startTicker()
@@ -347,6 +353,7 @@ public actor TorrentEngine {
     }
 
     private func pauseSessionAction(_ id: String, session: EngineSession) async {
+        if session.record.quarantineError != nil { session.record.recoveryWantedRunning = false }
         session.record.wantedRunning = false
         await stopSession(id, state: session.record.quarantineError == nil ? .paused : .failed)
         try? await checkpoint()
@@ -401,6 +408,7 @@ public actor TorrentEngine {
         defer { releaseActionGate(id) }
         guard !shuttingDown else { return }
         session.record.quarantineError = nil
+        session.record.recoveryWantedRunning = nil
         session.snapshot.error = nil
         guard !session.record.selectedFiles.isEmpty else {
             await pauseSessionAction(id, session: session)
@@ -611,6 +619,10 @@ public actor TorrentEngine {
 
     public func suspend() async {
         guard !shuttingDown else { return }
+        storageRecoverySuspended = true
+        storageRecoveryTask?.cancel()
+        await storageRecoveryTask?.value
+        storageRecoveryTask = nil
         suspended = Set(sessions.filter { $0.value.record.wantedRunning }.map(\.key))
         for id in Array(suspended) { await stopSession(id, state: .paused) }
         try? await checkpoint()
@@ -618,6 +630,7 @@ public actor TorrentEngine {
     }
     public func resume() async {
         guard !shuttingDown else { return }
+        storageRecoverySuspended = false
         for id in suspended { if let session = sessions[id], session.record.quarantineError == nil { session.snapshot.state = .queued } }
         suspended.removeAll()
         await schedule()
@@ -674,6 +687,8 @@ public actor TorrentEngine {
 
     private func quiesce() async {
         shuttingDown = true
+        let oldRecoveryTask = storageRecoveryTask
+        storageRecoveryTask?.cancel(); storageRecoveryTask = nil
         let oldTicker = ticker
         ticker?.cancel(); ticker = nil
         listener?.cancel(); listener = nil; listeningPort = 0
@@ -695,6 +710,7 @@ public actor TorrentEngine {
             for task in tasks { task.cancel() }
             for task in tasks { await task.value }
         }
+        await oldRecoveryTask?.value
         await oldTicker?.value
         if !refreshingIDs.isEmpty { await withCheckedContinuation { refreshWaiters.append($0) } }
         publishSnapshots()

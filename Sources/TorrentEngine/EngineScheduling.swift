@@ -32,6 +32,7 @@ extension TorrentEngine {
     /// periodic checkpoints until transfer work resumes.
     func updateActivity() {
         publishSnapshots()
+        updateStorageRecovery()
         if needsPeriodicUpdates && !shuttingDown { startTicker() }
         else { ticker?.cancel(); ticker = nil }
     }
@@ -171,7 +172,7 @@ extension TorrentEngine {
 
     func schedule() async {
         defer { updateActivity() }
-        guard !shuttingDown, !activating, suspended.isEmpty else { return }
+        guard !shuttingDown, !activating, !storageRecoverySuspended, suspended.isEmpty else { return }
         if needsDirtyCheckpoint {
             do { try await checkpoint(); needsDirtyCheckpoint = false }
             catch {
@@ -254,9 +255,12 @@ extension TorrentEngine {
     }
 
     /// A payload I/O failure belongs to the torrent, not to a single peer.
-    /// Keep it stopped across launches until the user explicitly retries it.
+    /// Preserve its error until an explicit retry or a successful storage probe.
     func quarantine(_ id: String, error: Error, persist: Bool = true) async {
         guard let session = sessions[id] else { return }
+        if session.record.quarantineError == nil {
+            session.record.recoveryWantedRunning = session.record.wantedRunning
+        }
         let message = session.record.quarantineError ?? error.localizedDescription
         session.record.quarantineError = message
         session.record.wantedRunning = false

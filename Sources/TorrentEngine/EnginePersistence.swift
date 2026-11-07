@@ -18,6 +18,7 @@ struct EngineRecord: Codable, Sendable {
     var fileUploadHistoryComplete: Bool? = nil
     var wantedRunning: Bool
     var quarantineError: String? = nil
+    var recoveryWantedRunning: Bool? = nil
     var verified: PieceBitset
     var refreshSource: TorrentRefreshSource? = nil
     var addedAt: Date? = nil
@@ -82,6 +83,7 @@ private struct MutableTransferRecord: Codable, Sendable {
     var fileUploadHistoryComplete: Bool? = nil
     var wantedRunning: Bool
     var quarantineError: String? = nil
+    var recoveryWantedRunning: Bool? = nil
     var verified: PieceBitset
     var refreshSource: TorrentRefreshSource?
     var addedAt: Date?
@@ -90,12 +92,12 @@ private struct MutableTransferRecord: Codable, Sendable {
         diskSignatures = nil; ownedSignatures = nil; selectedFiles = record.selectedFiles; seedRatio = record.seedRatio
         downloaded = record.downloaded; uploaded = record.uploaded
         fileUploadedBytes = record.fileUploadedBytes; fileUploadHistoryComplete = record.fileUploadHistoryComplete
-        wantedRunning = record.wantedRunning; quarantineError = record.quarantineError; verified = record.verified
+        wantedRunning = record.wantedRunning; quarantineError = record.quarantineError; recoveryWantedRunning = record.recoveryWantedRunning; verified = record.verified
         refreshSource = record.refreshSource
         addedAt = record.addedAt
     }
     func record(metainfo: TorrentMetainfo) -> EngineRecord {
-        EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, volumeUUID: volumeUUID, diskSignatures: diskSignatures, ownedSignatures: ownedSignatures, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloaded, uploaded: uploaded, fileUploadedBytes: fileUploadedBytes, fileUploadHistoryComplete: fileUploadHistoryComplete, wantedRunning: wantedRunning, quarantineError: quarantineError, verified: verified, refreshSource: refreshSource, addedAt: addedAt)
+        EngineRecord(metainfo: metainfo, destination: destination, bookmark: bookmark, volumeUUID: volumeUUID, diskSignatures: diskSignatures, ownedSignatures: ownedSignatures, selectedFiles: selectedFiles, seedRatio: seedRatio, downloaded: downloaded, uploaded: uploaded, fileUploadedBytes: fileUploadedBytes, fileUploadHistoryComplete: fileUploadHistoryComplete, wantedRunning: wantedRunning, quarantineError: quarantineError, recoveryWantedRunning: recoveryWantedRunning, verified: verified, refreshSource: refreshSource, addedAt: addedAt)
     }
 }
 

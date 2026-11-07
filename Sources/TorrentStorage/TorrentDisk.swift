@@ -38,6 +38,27 @@ public actor TorrentDisk {
         }
     }
     public func prepare() async throws { try await perform { try $0.prepare() } }
+    /// Opens only the original selected payload and boundary sidecars. No hashing,
+    /// allocation, or file creation is permitted during an automatic retry.
+    public func prepareForRecovery(ownedSignatures: [DiskSignature], expectedVolumeUUID: String?) async throws {
+        let paths = try await perform { worker in
+            guard worker.requireExistingPayload, worker.requireExistingSidecars, !worker.prepared else {
+                throw TorrentError.storage("Recovery requires unopened existing storage")
+            }
+            worker.buildLayout()
+            return Set(worker.fileLengths.keys)
+        }
+        let signatures = try await Self.validateOwnedFiles(destination: destination,
+            signatures: ownedSignatures.filter { paths.contains($0.path) },
+            allowMissing: false, expectedVolumeUUID: expectedVolumeUUID)
+        guard Set(signatures.map(\.path)) == paths else {
+            throw TorrentError.storage("Saved ownership is missing for selected storage")
+        }
+        try await perform { worker in
+            worker.allowedExistingSignatures = Dictionary(uniqueKeysWithValues: signatures.map { ($0.path, $0) })
+            try worker.prepare()
+        }
+    }
     public func write(offset: Int64, data: Data) async throws { try await perform { try $0.write(offset: offset, data: data) } }
     public func read(offset: Int64, length: Int) async throws -> Data { try await perform { try $0.read(offset: offset, length: length) } }
     public func verifyPiece(_ index: Int) async throws -> Bool { try await perform { try $0.verifyPiece(index) } }
@@ -105,7 +126,7 @@ private final class DiskWorker: @unchecked Sendable {
     let allowExisting: Bool
     let requireExistingSidecars: Bool
     let requireExistingPayload: Bool
-    let allowedExistingSignatures: [String: DiskSignature]?
+    var allowedExistingSignatures: [String: DiskSignature]?
     let totalLength: Int64
     var rootFD: Int32 = -1
     var rootIdentity: (UInt64, UInt64)?
