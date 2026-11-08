@@ -460,6 +460,13 @@ public actor TorrentEngine {
     private func applyFileSelection(_ id: String, session: EngineSession, selectedFiles: Set<Int>, startWhenSelected: Bool) async throws {
         let valid = Set(session.record.metainfo.files.filter { !$0.isPadding }.map(\.index))
         guard selectedFiles.isSubset(of: valid) else { throw TorrentError.storage("Invalid file selection") }
+        if session.record.quarantineError != nil && startWhenSelected && !selectedFiles.isEmpty {
+            do { _ = try await recoverStorageAction(id, session: session) }
+            catch {
+                if !(error is CancellationError) { await quarantine(id, error: error) }
+                throw error
+            }
+        }
         if let error = session.record.quarantineError { throw TorrentError.storage(error) }
         if selectedFiles == session.record.selectedFiles {
             if startWhenSelected && !selectedFiles.isEmpty { await startSessionAction(id, session: session) }

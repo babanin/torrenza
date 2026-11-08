@@ -82,45 +82,46 @@ extension TorrentEngine {
         await acquireActionGate(id)
         defer { releaseActionGate(id) }
         guard !shuttingDown, !storageRecoverySuspended, !Task.isCancelled else { return false }
+        do { return try await recoverStorageAction(id, session: session, automatic: true) }
+        catch { return false }
+    }
+
+    /// Caller holds the per-torrent action gate. Manual Download retries use
+    /// the same ownership checks without waiting for the background probe.
+    func recoverStorageAction(_ id: String, session: EngineSession, automatic: Bool = false) async throws -> Bool {
         session.busy = true
         defer { session.busy = false }
         let generation = session.generation
         let record = session.record
+        let disk = try TorrentDisk(metainfo: record.metainfo, destination: record.destination,
+            selectedFiles: record.selectedFiles, allowExisting: true,
+            requireExistingPayload: true, requireExistingSidecars: true)
         do {
-            let disk = try TorrentDisk(metainfo: record.metainfo, destination: record.destination,
-                selectedFiles: record.selectedFiles, allowExisting: true,
-                requireExistingPayload: true, requireExistingSidecars: true)
-            do {
-                try await disk.prepareForRecovery(
-                    ownedSignatures: record.ownedSignatures ?? record.diskSignatures ?? [],
-                    expectedVolumeUUID: record.volumeUUID)
-            } catch {
-                await disk.close()
-                return false
-            }
-            await disk.close()
-            await acquireSaveGate()
-            defer { releaseSaveGate() }
-            guard !shuttingDown, !storageRecoverySuspended, !Task.isCancelled,
-                  sessions[id] === session, session.generation == generation,
-                  session.record.quarantineError != nil else { return false }
-            var recovered = session.record
-            // Older versions erased run intent when quarantining. The requested
-            // automatic recovery includes those existing failures.
-            recovered.wantedRunning = recovered.recoveryWantedRunning ?? true
-            recovered.quarantineError = nil
-            recovered.recoveryWantedRunning = nil
-            try await persistence.saveQuarantine(recovered)
-            session.record = recovered
-            session.snapshot.error = nil
-            session.snapshot.state = recovered.wantedRunning
-                ? (session.selectedComplete && session.ratioReached ? .completed : .queued) : .paused
-            publishSnapshots()
-            return true
+            try await disk.prepareForRecovery(
+                ownedSignatures: record.ownedSignatures ?? record.diskSignatures ?? [],
+                expectedVolumeUUID: record.volumeUUID)
         } catch {
-            // Leave both the original error and saved progress intact. A failed
-            // persistence write is not a cure and must not trigger the full sweep.
-            return false
+            await disk.close()
+            throw error
         }
+        await disk.close()
+        await acquireSaveGate()
+        defer { releaseSaveGate() }
+        guard !shuttingDown, !(automatic && storageRecoverySuspended), !Task.isCancelled,
+              sessions[id] === session, session.generation == generation,
+              session.record.quarantineError != nil else { throw CancellationError() }
+        var recovered = session.record
+        // Older versions erased run intent when quarantining. The requested
+        // automatic recovery includes those existing failures.
+        recovered.wantedRunning = recovered.recoveryWantedRunning ?? true
+        recovered.quarantineError = nil
+        recovered.recoveryWantedRunning = nil
+        try await persistence.saveQuarantine(recovered)
+        session.record = recovered
+        session.snapshot.error = nil
+        session.snapshot.state = recovered.wantedRunning
+            ? (session.selectedComplete && session.ratioReached ? .completed : .queued) : .paused
+        publishSnapshots()
+        return true
     }
 }

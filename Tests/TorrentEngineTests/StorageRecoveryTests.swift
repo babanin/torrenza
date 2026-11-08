@@ -32,6 +32,52 @@ extension EngineTests {
         return engine
     }
 
+    func testDownloadRetriesOnlyRequestedQuarantinedTorrentWithoutHashing() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var record = try await storageRecoveryRecord(root: root, name: "retry.bin", resume: false)
+        record.seedRatio = nil
+        record.verified[1] = false
+        record.downloaded = 32_768
+        let other = try await storageRecoveryRecord(root: root, name: "other.bin")
+        // Changed bytes with the same identity/size prove retry trusts saved
+        // pieces rather than silently performing a Recheck.
+        let file = root.appendingPathComponent("retry.bin")
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.write(contentsOf: Data(repeating: 0, count: 65_536))
+        try handle.close()
+        let engine = try await storageRecoveryEngine(root: root, records: [record, other])
+        try await engine.setFilesSelected(record.metainfo.id, indices: [0], selected: true)
+        let snapshots = await engine.currentSnapshots()
+        let retried = try XCTUnwrap(snapshots.first { $0.id == record.metainfo.id })
+        XCTAssertNil(retried.error)
+        XCTAssertEqual(retried.state, .downloading)
+        XCTAssertEqual(retried.completedBytes, 32_768)
+        XCTAssertEqual(snapshots.first { $0.id == other.metainfo.id }?.state, .failed)
+        await engine.pause(record.metainfo.id)
+        try await engine.shutdownForProfileSwitch()
+        let restored = TorrentEngine(stateDirectory: root.appendingPathComponent("state"))
+        try await restored.prepareForActivation()
+        try await restored.activatePreparedProfile()
+        let afterRestore = await restored.currentSnapshots().first { $0.id == record.metainfo.id }
+        XCTAssertNil(afterRestore?.error)
+        XCTAssertEqual(afterRestore?.state, .paused)
+        XCTAssertEqual(afterRestore?.completedBytes, 32_768)
+        await restored.shutdown()
+    }
+
+    func testDownloadRetryRetainsSeedRatioLimit() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = try await storageRecoveryRecord(root: root, name: "complete.bin", resume: false)
+        let engine = try await storageRecoveryEngine(root: root, records: [record])
+        try await engine.setFilesSelected(record.metainfo.id, indices: [0], selected: true)
+        let snapshot = await engine.currentSnapshots().first
+        XCTAssertNil(snapshot?.error)
+        XCTAssertEqual(snapshot?.state, .completed)
+        await engine.shutdown()
+    }
+
     func testStorageRecoveryFirstSuccessChecksAllRemainingFailures() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -96,6 +142,18 @@ extension EngineTests {
             XCTAssertEqual(snapshot?.state, .failed, failure)
             XCTAssertEqual(snapshot?.error, record.quarantineError, failure)
             XCTAssertEqual(snapshot?.completedBytes, 65_536, failure)
+            XCTAssertEqual(try? Data(contentsOf: file), before, failure)
+            if failure == "missing" { XCTAssertFalse(FileManager.default.fileExists(atPath: file.path)) }
+            do {
+                try await engine.setFilesSelected(record.metainfo.id, indices: [0], selected: true)
+                XCTFail("Manual Download must reject unsafe storage: \(failure)")
+            } catch {
+                XCTAssertNotEqual(error.localizedDescription, record.quarantineError,
+                                  "Retry should report the current validation failure")
+            }
+            let retried = await engine.currentSnapshots().first
+            XCTAssertEqual(retried?.state, .failed, failure)
+            XCTAssertEqual(retried?.completedBytes, 65_536, failure)
             XCTAssertEqual(try? Data(contentsOf: file), before, failure)
             if failure == "missing" { XCTAssertFalse(FileManager.default.fileExists(atPath: file.path)) }
             await engine.shutdown()

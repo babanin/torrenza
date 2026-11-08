@@ -1,5 +1,11 @@
 # Validation
 
+## Manual Download after storage returns (2026-11-08)
+
+- Explicit file enabling previously returned the saved quarantine message before probing storage. It now performs the existing ownership/volume recovery checks under the per-torrent action gate, then applies the requested Download action. Automatic probing and whole-torrent Start behavior are unchanged.
+- Thirteen focused XCTest cases passed. The full package suite passed 102 XCTest tests (one skipped) and 156 Swift Testing tests. Regressions cover targeted retry without hashing, saved progress and paused restore, isolation of other failures, seed limits, missing/replaced/truncated/symlink payloads, wrong volumes, and selection queue behavior.
+- Release built, passed strict signature verification, and was installed with the previous bundle preserved. Installed contents matched the build. The existing 804-transfer library opened; clicking Download on the user's selected failed single-file torrent changed it to `Seeding · 100%` and cleared its storage error. No payload recheck or bulk retry was requested.
+
 ## Main-tree refresh checks (2026-11-08)
 
 - Full package suite: 100 XCTest tests, one skipped, no failures; 156 Swift Testing tests passed. Optimized `TreeTests|TreeActionTests`: 20 tests passed.

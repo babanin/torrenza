@@ -137,6 +137,8 @@ Startup deliberately trusts saved progress, even after an interrupted session. D
 
 Default seed ratio is 1.0. `Seeding` means available to upload; `Completed` means finished and stopped. Start still respects the configured ratio, so a torrent already over its limit stops again. Use that torrent's **Seed until → Unlimited** or a higher limit when requested; do not silently change the global default or fabricate transfer counters.
 
+Explicit **Download** on a storage-failed file or single-file torrent retries that torrent's existing storage using the same volume/ownership checks as automatic recovery. It must not reject solely from a saved quarantine message, hash unchanged selections, recreate missing owned payload, or trigger recovery of unrelated torrents. Failed retries report the current validation error while retaining quarantine and saved progress.
+
 ## CPU, memory, and I/O profiling
 
 Measure the **Release GUI** for GUI performance claims. Record the build, profile/torrent count, active transfers, storage type, peer count, workload duration, and whether measurement covers startup or steady state. Use a synthetic profile where possible; do not initiate payload rechecks or destructive fault injection on the user's library.
