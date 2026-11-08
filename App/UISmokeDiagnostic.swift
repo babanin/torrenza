@@ -18,6 +18,7 @@ import TorrentStorage
         let addTorrent = arguments.contains("--ui-add-torrent")
         let multiselect = arguments.contains("--ui-multiselect-check")
         let sortCheck = arguments.contains("--ui-sort-check")
+        let scrollCheck = arguments.contains("--ui-scroll-check")
         let fileSelectionCheck = arguments.contains("--ui-file-selection-check")
         let workspaceCheck = arguments.contains("--ui-workspace-check")
         let selectionCheck = arguments.contains("--ui-selection-check")
@@ -68,7 +69,7 @@ import TorrentStorage
             ))
         }
         // Four-digit sidebar counts and a realistic scrolling workload.
-        if arguments.contains("--ui-many-transfers") {
+        if arguments.contains("--ui-many-transfers") || scrollCheck {
             let destination = URL(fileURLWithPath: "/Volumes/Storage/bulk")
             let bulk = (0..<1234).map { index -> TransferSnapshot in
                 TransferSnapshot(
@@ -81,6 +82,12 @@ import TorrentStorage
                 )
             }
             transfers.append(contentsOf: bulk)
+        }
+        if scrollCheck {
+            let files = (0..<2048).map { index in
+                FileSnapshot(file: TorrentFile(index: index * 2, path: ["Large collection", String(format: "Part-%04d.dat", index)], length: 1_000_000, offset: Int64(index) * 1_000_000), selected: true, verifiedBytes: 250_000)
+            }
+            transfers.append(TransferSnapshot(id: "ui-scroll-large", name: "Large collection", destination: URL(fileURLWithPath: "/Volumes/Storage/bulk"), isMultiFile: true, state: .paused, files: files, completedBytes: 512_000_000, selectedBytes: 2_048_000_000))
         }
         refreshVisibleCount()
         Task { @MainActor in
@@ -102,6 +109,14 @@ import TorrentStorage
                 outline.expandItem(nil, expandChildren: true)
                 for row in 0..<outline.numberOfRows {
                     if let node = outline.item(atRow: row) as? TorrentTreeNode, node.id == (fileBadges ? "torrent:ui-badge-downloading" : "torrent:ui-a") { outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); break }
+                }
+            }
+            var scrollResult: (passed: Bool, lines: [String]) = (true, [])
+            if scrollCheck {
+                if let outline = findOutline(view) {
+                    scrollResult = await checkDebugScrolling(outline: outline)
+                } else {
+                    scrollResult = (false, ["FAIL: Scrolling check: Torrent outline was not found"])
                 }
             }
             var multiselectResult: (passed: Bool, lines: [String]) = (true, [])
@@ -170,10 +185,11 @@ import TorrentStorage
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Torrenza-UI", isDirectory: true)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let refreshSuffix = refreshSelection ? "-refresh-selection" : refreshResultCapture ? "-refresh-result" : refreshProgress ? "-refresh-progress" : refreshCheck ? "-refresh" : ""
-            let basename = "ui-smoke-\(dark ? "dark" : "light")\(narrow ? "-narrow" : wide ? "-wide" : "")\(longProfile ? "-long-profile" : "")\(fileBadges ? "-file-badges" : "")\(qbImport ? "-qb-import" : "")\(addTorrent ? "-add-torrent" : "")\(arguments.contains("--ui-add-torrent-error") ? "-error" : "")\(arguments.contains("--ui-qb-skip-verification") ? "-unchecked" : "")\(multiselect ? "-multiselect" : "")\(sortCheck ? "-sort" : "")\(fileSelectionCheck ? "-file-selection" : "")\(refreshSuffix)"
+            let basename = "ui-smoke-\(dark ? "dark" : "light")\(narrow ? "-narrow" : wide ? "-wide" : "")\(longProfile ? "-long-profile" : "")\(fileBadges ? "-file-badges" : "")\(qbImport ? "-qb-import" : "")\(addTorrent ? "-add-torrent" : "")\(arguments.contains("--ui-add-torrent-error") ? "-error" : "")\(arguments.contains("--ui-qb-skip-verification") ? "-unchecked" : "")\(multiselect ? "-multiselect" : "")\(sortCheck ? "-sort" : "")\(fileSelectionCheck ? "-file-selection" : "")\(refreshSuffix)\(scrollCheck ? "-scroll" : "")"
             let output = directory.appendingPathComponent(basename + ".png")
             try? png.write(to: output, options: .atomic)
             var geometry = ["Window content size: \(view.bounds.size)", "Profile name: \(fixtureName)", "Toolbar item count: \(window.toolbar?.items.count ?? 0)"]
+            geometry.append(contentsOf: scrollResult.lines)
             geometry.append(contentsOf: multiselectResult.lines)
             geometry.append(contentsOf: sortResult.lines)
             geometry.append(contentsOf: fileSelectionResult.lines)
@@ -272,9 +288,132 @@ import TorrentStorage
             try? geometry.joined(separator: "\n").write(to: directory.appendingPathComponent(basename + ".txt"), atomically: true, encoding: .utf8)
             let importSheetVisible = !qbImport || window.attachedSheet != nil
             if qbImport { print("\(importSheetVisible ? "PASS" : "FAIL"): qBittorrent import sheet is visible") }
-            captured = searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed && sortResult.passed && fileSelectionResult.passed && uploadChecksPassed && addTorrentResult.passed && qbSheetResult.passed && refreshResult.passed && workspaceResult.passed && selectionResult.passed && columnsResult.passed
+            captured = scrollResult.passed && searchChecksPassed && appearanceChecksPassed && importChecksPassed && importSheetVisible && multiselectResult.passed && sortResult.passed && fileSelectionResult.passed && uploadChecksPassed && addTorrentResult.passed && qbSheetResult.passed && refreshResult.passed && workspaceResult.passed && selectionResult.passed && columnsResult.passed
             print("UI snapshot: \(output.path)")
         }
+    }
+
+    /// Deterministic synthetic workload; its timings are not Release GUI performance evidence.
+    private func checkDebugScrolling(outline: NSOutlineView) async -> (passed: Bool, lines: [String]) {
+        var passed = true
+        var lines = ["Scrolling workload: 1,234 bulk torrents, 2,048 expanded files, 500 ms simulated updates; no payload I/O"]
+        func check(_ condition: Bool, _ message: String) {
+            let line = "\(condition ? "PASS" : "FAIL"): Scrolling check: \(message)"
+            lines.append(line); print(line)
+            if !condition { passed = false }
+        }
+        guard let coordinator = outline.delegate as? TorrentOutlineView.Coordinator,
+              let index = transfers.firstIndex(where: { $0.id == "ui-bulk-0000" }),
+              let node = (0..<outline.numberOfRows).compactMap({ outline.item(atRow: $0) as? TorrentTreeNode }).first(where: { $0.id == "torrent:ui-bulk-0000" }) else {
+            check(false, "Bulk fixture and coordinator exist")
+            return (passed, lines)
+        }
+        func settle() { outline.layoutSubtreeIfNeeded(); outline.displayIfNeeded() }
+        func labels(_ view: NSView) -> [String] {
+            (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(labels)
+        }
+        check(transfers.filter { $0.id.hasPrefix("ui-bulk-") }.count == 1234, "All 1,234 bulk torrent snapshots are installed")
+        let large = (0..<outline.numberOfRows).compactMap { outline.item(atRow: $0) as? TorrentTreeNode }.first { $0.id == "torrent:ui-scroll-large" }
+        check(large.map { outline.isItemExpanded($0) && tree.children(of: $0).count == 2048 } == true,
+              "Large multifile torrent is expanded with 2,048 files")
+        let nameColumn = outline.column(withIdentifier: .init("name"))
+        let progressColumn = outline.column(withIdentifier: .init("progress"))
+        let originalScrollOrigin = outline.enclosingScrollView?.contentView.bounds.origin ?? .zero
+        let row = outline.row(forItem: node)
+        outline.scrollRowToVisible(row); settle()
+        let cell = outline.view(atColumn: progressColumn, row: row, makeIfNecessary: true)
+        let structuralBefore = coordinator.debugStructuralReloadCount
+        let rowReloadsBefore = coordinator.debugVisibleRowReloadCount
+        for _ in 0..<3 { coordinator.refresh(model: self) }
+        check(coordinator.debugStructuralReloadCount == structuralBefore && coordinator.debugVisibleRowReloadCount == rowReloadsBefore,
+              "Unchanged updates perform no structural or visible-row reloads")
+        for step in 1...4 {
+            try? await Task.sleep(for: .milliseconds(500))
+            transfers[index].completedBytes = Int64(1_000_000_000 + step * 400_000_000)
+            transfers[index].files[0].verifiedBytes = transfers[index].completedBytes
+            coordinator.refresh(model: self); settle()
+            let current = outline.view(atColumn: progressColumn, row: outline.row(forItem: node), makeIfNecessary: false)
+            check(current === cell && current.map { labels($0).contains { $0.contains("\(25 + step * 10)%") } } == true,
+                  "500 ms update \(step) changes visible progress in the same cell")
+        }
+        check(coordinator.debugStructuralReloadCount == structuralBefore && coordinator.debugVisibleRowReloadCount == rowReloadsBefore,
+              "Live values do not reload rows under name sorting")
+        for fraction in [0.25, 0.5, 0.75, 1.0, 0.0] {
+            outline.scrollRowToVisible(Int(Double(outline.numberOfRows - 1) * fraction)); settle()
+            let visible = outline.rows(in: outline.visibleRect)
+            var currentNames = true
+            if visible.location != NSNotFound {
+                for row in visible.location..<NSMaxRange(visible) where row < outline.numberOfRows {
+                    guard let node = outline.item(atRow: row) as? TorrentTreeNode,
+                          let cell = outline.view(atColumn: nameColumn, row: row, makeIfNecessary: true) as? NSTableCellView else { continue }
+                    currentNames = currentNames && cell.textField?.stringValue == node.name
+                }
+            }
+            check(currentNames, "Recycled names match current nodes at scroll fraction \(fraction)")
+        }
+        func setProgress(_ bytes: Int64) {
+            transfers[index].completedBytes = bytes
+            transfers[index].files[0].verifiedBytes = bytes
+            coordinator.refresh(model: self)
+        }
+        func checkProgress(_ percent: Int, _ message: String) {
+            let cell = outline.view(atColumn: progressColumn, row: outline.row(forItem: node), makeIfNecessary: true)
+            check(cell.map { labels($0).contains { $0.contains("\(percent)%") } } == true, message)
+        }
+        // Change the snapshot while the target is far outside the viewport,
+        // then expose it synchronously, before SwiftUI can deliver another update.
+        outline.scrollRowToVisible(outline.numberOfRows - 1); settle()
+        check(!outline.rect(ofRow: outline.row(forItem: node)).intersects(outline.visibleRect),
+              "Target is offscreen before its snapshot changes")
+        setProgress(2_800_000_000)
+        outline.scrollRowToVisible(outline.row(forItem: node)); settle()
+        checkProgress(70, "Offscreen update appears on exposure before another refresh")
+
+        // AppKit can retain prepared cells just beyond the viewport. Explicitly
+        // prepare one there so this also covers the retained-cell path.
+        let clip = outline.enclosingScrollView?.contentView
+        let targetRect = outline.rect(ofRow: outline.row(forItem: node))
+        clip?.scroll(to: NSPoint(x: 0, y: targetRect.maxY + 1)); settle()
+        check(!targetRect.intersects(outline.visibleRect), "Nearby prepared target is outside the viewport")
+        let prepared = outline.view(atColumn: progressColumn, row: outline.row(forItem: node), makeIfNecessary: true)
+        check(prepared != nil, "Nearby offscreen progress cell is prepared")
+        setProgress(3_000_000_000)
+        outline.scrollRowToVisible(outline.row(forItem: node)); settle()
+        checkProgress(75, "Prepared offscreen cell shows new progress before another refresh")
+
+        // Widen the name column temporarily to put progress beyond the right
+        // edge, with a previously prepared progress view retained by AppKit.
+        let name = outline.tableColumns[nameColumn]
+        let originalNameWidth = name.width
+        let originalNameMaxWidth = name.maxWidth
+        name.maxWidth = max(originalNameMaxWidth, outline.visibleRect.width + 200)
+        name.width = outline.visibleRect.width + 100
+        clip?.scroll(to: NSPoint(x: 0, y: clip?.bounds.origin.y ?? 0)); settle()
+        let progressRect = outline.frameOfCell(atColumn: progressColumn, row: outline.row(forItem: node))
+        check(!progressRect.intersects(outline.visibleRect), "Progress column is horizontally outside the viewport")
+        setProgress(3_200_000_000)
+        outline.scrollColumnToVisible(progressColumn); settle()
+        checkProgress(80, "Horizontally exposed progress shows new value before another refresh")
+        name.width = originalNameWidth
+        name.maxWidth = originalNameMaxWidth
+        outline.enclosingScrollView?.layoutSubtreeIfNeeded()
+        if let scrollView = outline.enclosingScrollView {
+            scrollView.contentView.scroll(to: originalScrollOrigin)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            // NSTableView's header has its own clip view. Synchronize it after
+            // the temporary width experiment before capturing the whole window.
+            if let headerClip = outline.headerView?.superview as? NSClipView {
+                headerClip.scroll(to: NSPoint(x: scrollView.contentView.bounds.minX, y: headerClip.bounds.minY))
+            }
+            scrollView.layoutSubtreeIfNeeded()
+        }
+        settle()
+        check(abs(name.width - originalNameWidth) < 0.5
+              && abs((clip?.bounds.minX ?? 0) - originalScrollOrigin.x) < 0.5
+              && abs((clip?.bounds.minY ?? 0) - originalScrollOrigin.y) < 0.5,
+              "Temporary width and original scroll origin are restored")
+        lines.append("Coverage: run with --ui-sort-check --ui-multiselect-check --ui-file-selection-check --ui-search-check and both appearances; profile switching uses --profile-smoke")
+        return (passed, lines)
     }
 
     /// Exercise native controls with synthetic snapshots; captured actions never reach the engine.

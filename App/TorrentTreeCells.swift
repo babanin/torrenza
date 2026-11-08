@@ -28,6 +28,10 @@ final class TorrentTableRowView: NSTableRowView {
 
     private var hovered = false
 
+    func resetHover() {
+        if hovered { hovered = false; needsDisplay = true }
+    }
+
     /// Selection fill geometry: the highlight spans the whole row.
     private var selectionRect: NSRect { bounds.insetBy(dx: 3, dy: 2) }
 
@@ -78,8 +82,9 @@ final class TorrentTableRowView: NSTableRowView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        for area in trackingAreas where area.owner === self { removeTrackingArea(area) }
-        guard Self.hoverTrackingEnabled else { return }
+        guard Self.hoverTrackingEnabled else { clearHoverTracking(); return }
+        // inVisibleRect tracks geometry itself; keep a valid area across layout.
+        guard !trackingAreas.contains(where: { $0.owner === self }) else { return }
         addTrackingArea(NSTrackingArea(
             rect: bounds,
             options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
@@ -104,14 +109,14 @@ final class TorrentTableRowView: NSTableRowView {
 /// queued work.
 final class ProgressTrackView: NSView {
     var fraction: Double = 0 {
-        didSet { needsDisplay = true }
+        didSet { if oldValue != fraction { needsDisplay = true } }
     }
     var showsFill = true {
-        didSet { needsDisplay = true }
+        didSet { if oldValue != showsFill { needsDisplay = true } }
     }
     /// Determinate fill color, resolved at draw time.
     var fillColor: NSColor = Palette.accent {
-        didSet { needsDisplay = true }
+        didSet { if oldValue != fillColor { needsDisplay = true } }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -185,8 +190,8 @@ final class TorrentProgressCellView: NSTableCellView {
         track.showsFill = fraction != nil
         track.fraction = fraction ?? 0
         track.fillColor = trackTint
-        statusText.stringValue = text
-        statusText.textColor = tint
+        if statusText.stringValue != text { statusText.stringValue = text }
+        if statusText.textColor != tint { statusText.textColor = tint }
     }
 
     /// Text-only presentations drop the track and center the text; stacked

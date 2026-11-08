@@ -28,6 +28,9 @@ import TorrentCore
     @Test func progressUpdatesRetainNodes() {
         let model = TorrentTreeModel(); var transfer = torrent()
         model.update([transfer]); let root = model.roots[0]
+        // Prime the snapshot cache before replacing progress on retained nodes.
+        #expect(model.metrics(for: root).verified == 40)
+        #expect(model.metrics(for: root).downloadRate == 20)
         transfer.completedBytes = 90; transfer.downloadRate = 22; transfer.files[0].verifiedBytes = 90
         #expect(!model.update([transfer]))
         #expect(model.roots[0] === root)

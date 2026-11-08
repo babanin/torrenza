@@ -1,5 +1,16 @@
 # Validation
 
+## Main-tree refresh checks (2026-11-08)
+
+- Full package suite: 100 XCTest tests, one skipped, no failures; 156 Swift Testing tests passed. Optimized `TreeTests|TreeActionTests`: 20 tests passed.
+- The Debug `--ui-scroll-check` fixture adds 1,234 torrents and an expanded 2,048-file torrent with sparse file indices. It checks unchanged updates, four 500 ms progress updates in the same cell, actual AppKit reload calls, recycled names, and progress changed while vertically or horizontally offscreen.
+- Snapshot metrics are discarded before sorting; indexed checkbox projections are discarded on snapshot/pending-action changes. Regression tests cover sparse indices, hidden descendants, padding, stale nodes, rollback, and snapshot isolation.
+- Release diagnostic flags remain disabled. Debug fixture results establish presentation correctness, not Release scrolling performance.
+- Final light/dark scrolling, sorting, file-selection and search diagnostics passed. The stronger nearby prepared-cell check initially exposed stale progress; clip-view bounds observation now refreshes newly exposed cells without rebuilding the tree. Standalone multiselection passed after a combined run lost key-window focus. The isolated profile smoke ended with `PROFILE SMOKE PASSED`.
+- The final Release was built, strictly signature-verified, installed with the previous bundle preserved, and checked byte-for-byte against the build. The process ran from `/Applications/Torrenza.app`; the existing 804-transfer library appeared with no opening-profile overlay. Local signing is ad-hoc.
+- Release Time Profiler observations: three nominal 30-second baseline captures had main-thread sample weights of 19.671, 14.694 and 18.420 seconds; two after-install captures had 9.786 and 12.143 seconds. These are **not a controlled speedup result**: active transfers changed from 0 to 5, window geometry changed on relaunch, automation increased from 240 to 480 scroll calls per pass, and accessibility work is included. Storage medium type was not established; visible peer counts were zero. Baseline RSS grew from 187,344 to 538,064 KiB; initial after-install RSS was 325,312 KiB, with process age/cache warming unmatched. No memory improvement is established.
+- The requested three matched before/after passes and animation-hitch comparison remain incomplete (three before, two after; Time Profiler responsiveness intervals are not frame-hitch measurements). No claim of fewer/shorter measured hitches is made. Private traces and XML exports are under `/private/tmp/torrenza-scroll-before-{c,d,e}.trace`, `/private/tmp/torrenza-scroll-after-{c,d}.trace`, and `/private/tmp/torrenza-{before,after}-*-profile.xml`. Baseline executable SHA-256: `38c264ff31515966a681f58e74e27c2e9bd3c3d0c358efd20b0a720416de4d07`; installed executable: `757346c8cebc2a00d4e5f28c2abd02eb25ba7c7006f9fcc799d49497c9a334b8`.
+
 Environment: Apple Silicon, macOS 26.5.1, Xcode 26.6, Swift 6.3.3. Results below distinguish protocol/library tests from native UI and release checks.
 
 ## Executed checks

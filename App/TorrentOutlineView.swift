@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import SwiftUI
 import TorrentCore
 import TorrentEngine
@@ -68,6 +69,24 @@ final class TorrentTableHeaderCell: NSTableHeaderCell {
     }
 }
 
+#if DEBUG
+/// Count actual AppKit reload requests, including calls outside the coordinator.
+final class DiagnosticTorrentOutlineView: NSOutlineView {
+    private(set) var structuralReloadCount = 0
+    private(set) var visibleRowReloadCount = 0
+
+    override func reloadData() {
+        structuralReloadCount += 1
+        super.reloadData()
+    }
+
+    override func reloadData(forRowIndexes rowIndexes: IndexSet, columnIndexes: IndexSet) {
+        visibleRowReloadCount += 1
+        super.reloadData(forRowIndexes: rowIndexes, columnIndexes: columnIndexes)
+    }
+}
+#endif
+
 struct TorrentOutlineView: NSViewRepresentable {
     @Bindable var model: AppModel
     var snapshots: [TransferSnapshot]
@@ -78,7 +97,11 @@ struct TorrentOutlineView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true; scroll.autohidesScrollers = true
         scroll.drawsBackground = false; scroll.backgroundColor = .clear
+        #if DEBUG
+        let outline = DiagnosticTorrentOutlineView()
+        #else
         let outline = NSOutlineView()
+        #endif
         // Solid panel surface: the SwiftUI panel container behind this scroll
         // view provides the background, so no alternating stripes.
         outline.style = .plain
@@ -121,10 +144,14 @@ struct TorrentOutlineView: NSViewRepresentable {
         outline.target = context.coordinator; outline.doubleAction = #selector(Coordinator.doubleClick(_:))
         let menu = NSMenu(); menu.autoenablesItems = false; menu.delegate = context.coordinator; outline.menu = menu
         scroll.documentView = outline; context.coordinator.outline = outline
+        context.coordinator.observeScrolling(in: scroll.contentView)
         context.coordinator.refresh(model: model)
         return scroll
     }
     func updateNSView(_ view: NSScrollView, context: Context) { context.coordinator.refresh(model: model) }
+    static func dismantleNSView(_ view: NSScrollView, coordinator: Coordinator) {
+        coordinator.stopObservingScrolling()
+    }
 
     @MainActor final class Coordinator: NSObject, NSOutlineViewDelegate, NSOutlineViewDataSource, NSMenuDelegate {
         var model: AppModel
@@ -136,7 +163,53 @@ struct TorrentOutlineView: NSViewRepresentable {
         var loadedState = false
         var restoring = false
         var filtering = false
+        private weak var observedClipView: NSClipView?
+        private var configuredVisibleRows = IndexSet()
+        private var configuredHorizontalRange: ClosedRange<CGFloat>?
+        private var configuringVisibleCells = false
+
+        func observeScrolling(in clipView: NSClipView) {
+            stopObservingScrolling()
+            observedClipView = clipView
+            clipView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(scrollBoundsChanged(_:)), name: NSView.boundsDidChangeNotification, object: clipView)
+        }
+        func stopObservingScrolling() {
+            if let observedClipView {
+                NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: observedClipView)
+            }
+            observedClipView = nil
+        }
+        @objc private func scrollBoundsChanged(_ notification: Notification) {
+            // Do not update snapshots or sort during scrolling. Prepared cells
+            // can re-enter without an AppKit viewFor/didAdd callback.
+            configureVisibleCells(onlyNewlyExposed: true)
+        }
+        private func configureVisibleCells(onlyNewlyExposed: Bool = false) {
+            guard belongsToActiveProfile, !restoring, !configuringVisibleCells, let outline else { return }
+            let rect = outline.visibleRect
+            let range = outline.rows(in: rect)
+            guard range.location != NSNotFound else { return }
+            let visibleRows = IndexSet(integersIn: range.location..<min(outline.numberOfRows, NSMaxRange(range)))
+            let horizontalRange = rect.minX...rect.maxX
+            let rows = onlyNewlyExposed && configuredHorizontalRange == horizontalRange
+                ? visibleRows.subtracting(configuredVisibleRows) : visibleRows
+            configuredVisibleRows = visibleRows
+            configuredHorizontalRange = horizontalRange
+            configuringVisibleCells = true
+            defer { configuringVisibleCells = false }
+            for row in rows {
+                guard let node = outline.item(atRow: row) as? TorrentTreeNode else { continue }
+                for (index, column) in outline.tableColumns.enumerated() {
+                    guard let cell = outline.view(atColumn: index, row: row, makeIfNecessary: false) as? NSTableCellView else { continue }
+                    configure(cell, column: column, node: node)
+                }
+            }
+        }
         #if DEBUG
+        var debugStructuralReloadCount: Int { (outline as? DiagnosticTorrentOutlineView)?.structuralReloadCount ?? 0 }
+        var debugVisibleRowReloadCount: Int { (outline as? DiagnosticTorrentOutlineView)?.visibleRowReloadCount ?? 0 }
+        var debugCellConfigurationCount = 0
         var debugFileSelectionAction: (([TorrentTreeNode], Bool) -> Void)?
         #endif
         private let fileIcons: NSCache<NSString, NSImage> = {
@@ -205,6 +278,10 @@ struct TorrentOutlineView: NSViewRepresentable {
                 outline.sortDescriptors = descriptors
                 restoring = false
             }
+            let oldVisibleRect = outline.visibleRect
+            let topRow = outline.row(at: NSPoint(x: oldVisibleRect.minX, y: oldVisibleRect.minY))
+            let topID = topRow >= 0 ? (outline.item(atRow: topRow) as? TorrentTreeNode)?.id : nil
+            let topOffset = topRow >= 0 ? oldVisibleRect.minY - outline.rect(ofRow: topRow).minY : 0
             model.tree.update(model.transfers, search: model.search, filter: model.filter, sort: model.uiState.sortOrder)
             if generation != model.tree.generation {
                 generation = model.tree.generation
@@ -221,6 +298,14 @@ struct TorrentOutlineView: NSViewRepresentable {
                     }
                 }
                 outline.selectRowIndexes(selectedRows, byExtendingSelection: false)
+                if let topID, let scroll = outline.enclosingScrollView {
+                    for row in 0..<outline.numberOfRows where (outline.item(atRow: row) as? TorrentTreeNode)?.id == topID {
+                        let point = NSPoint(x: oldVisibleRect.minX, y: outline.rect(ofRow: row).minY + topOffset)
+                        scroll.contentView.scroll(to: scroll.contentView.constrainBoundsRect(NSRect(origin: point, size: scroll.contentView.bounds.size)).origin)
+                        scroll.reflectScrolledClipView(scroll.contentView)
+                        break
+                    }
+                }
                 // Hidden rows must not remain targets of toolbar or menu actions.
                 selectedNodeIDs = Set(restoredSelection.map(\.id))
                 restoring = false
@@ -233,13 +318,10 @@ struct TorrentOutlineView: NSViewRepresentable {
                         model.selectedNodes = restoredSelection
                     }
                 }
-            } else if outline.window?.isVisible ?? false {
-                let rows = outline.rows(in: outline.visibleRect)
-                if rows.location != NSNotFound && rows.length > 0 {
-                    outline.reloadData(forRowIndexes: IndexSet(integersIn: rows.location..<min(outline.numberOfRows, rows.location + rows.length)), columnIndexes: IndexSet(integersIn: 0..<outline.numberOfColumns))
-                }
             }
+            if outline.window?.isVisible ?? false { configureVisibleCells() }
         }
+
         private func restore(_ node: TorrentTreeNode, outline: NSOutlineView, reveal: Bool, depth: Int) {
             // Search opens ancestors but never automatically expands thousands of file leaves.
             let autoExpand: Bool
@@ -267,7 +349,21 @@ struct TorrentOutlineView: NSViewRepresentable {
         func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { belongsToActiveProfile && ((item as? TorrentTreeNode)?.expandable ?? false) }
         func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any?) -> NSTableRowView? {
             // The workspace's rounded lavender selection and quiet hover.
-            TorrentTableRowView()
+            let identifier = NSUserInterfaceItemIdentifier("torrent-row")
+            let row = outlineView.makeView(withIdentifier: identifier, owner: self) as? TorrentTableRowView ?? TorrentTableRowView()
+            row.identifier = identifier
+            row.resetHover()
+            return row
+        }
+        func outlineView(_ outlineView: NSOutlineView, didAdd rowView: NSTableRowView, forRow row: Int) {
+            guard belongsToActiveProfile, let node = outlineView.item(atRow: row) as? TorrentTreeNode else { return }
+            // AppKit can retain prepared cells outside the viewport. Refresh
+            // them when their row re-enters, even if viewFor is not requested.
+            for (index, column) in outlineView.tableColumns.enumerated() {
+                if let cell = rowView.view(atColumn: index) as? NSTableCellView {
+                    configure(cell, column: column, node: node)
+                }
+            }
         }
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
             guard belongsToActiveProfile, let node = item as? TorrentTreeNode, let column = tableColumn else { return nil }
@@ -289,7 +385,17 @@ struct TorrentOutlineView: NSViewRepresentable {
                 } else { text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4).isActive = true; text.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular) }
                 NSLayoutConstraint.activate([text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             }
-            let metrics = model.tree.metrics(for: node)
+            configure(cell, column: column, node: node)
+            return cell
+        }
+        private func configure(_ cell: NSTableCellView, column: NSTableColumn, node: TorrentTreeNode) {
+            #if DEBUG
+            debugCellConfigurationCount += 1
+            #endif
+            let cellID = column.identifier
+            // Name, date, and swarm cells never need aggregate metrics.
+            let metrics = ["size", "progress", "download", "upload", "uploaded"].contains(cellID.rawValue)
+                ? model.tree.metrics(for: node) : TreeMetrics()
             let torrent: TransferSnapshot? = { if case .torrent(let id) = node.kind { return model.tree.transfers[id] }; return nil }()
             let unavailable = !node.transferIDs.isEmpty && node.transferIDs.allSatisfy { model.tree.transfers[$0]?.state == .unavailable }
             let value: String
@@ -299,11 +405,13 @@ struct TorrentOutlineView: NSViewRepresentable {
             switch cellID.rawValue {
             case "name":
                 value = node.name; tooltip = node.url?.path ?? node.name
-                cell.imageView?.image = icon(for: node, torrent: torrent)
+                let image = icon(for: node, torrent: torrent)
+                if cell.imageView?.image !== image { cell.imageView?.image = image }
                 // Torrent names are one weight heavier than folder and file
                 // names; every configuration sets the font so reused cells
                 // cannot retain another node type's weight.
-                cell.textField?.font = .systemFont(ofSize: 13, weight: isTorrentRow ? .medium : .regular)
+                let font = NSFont.systemFont(ofSize: 13, weight: isTorrentRow ? .medium : .regular)
+                if cell.textField?.font != font { cell.textField?.font = font }
                 let badgeState = torrent?.isMultiFile == false ? torrent?.state : nil
                 (cell as? TorrentNameCellView)?.setTransferState(badgeState)
                 configureSelectionControl(in: cell, for: node)
@@ -385,15 +493,14 @@ struct TorrentOutlineView: NSViewRepresentable {
                 }
                 progressCell.setTrackHidden(fraction == nil)
                 progressCell.configure(fraction: fraction, text: value, tint: tint, trackTint: trackTint)
-                progressCell.setAccessibilityLabel("Progress: \(value)")
             } else {
-                cell.textField?.stringValue = value
-                cell.textField?.textColor = textTint
+                if cell.textField?.stringValue != value { cell.textField?.stringValue = value }
+                if cell.textField?.textColor != textTint { cell.textField?.textColor = textTint }
             }
-            cell.toolTip = tooltip
-            cell.setAccessibilityLabel("\(column.title): \(value)")
-            cell.setAccessibilityHelp(tooltip)
-            return cell
+            if cell.toolTip != tooltip { cell.toolTip = tooltip }
+            let label = "\(column.title): \(value)"
+            if cell.accessibilityLabel() != label { cell.setAccessibilityLabel(label) }
+            if cell.accessibilityHelp() != tooltip { cell.setAccessibilityHelp(tooltip) }
         }
         /// Progress for a torrent row, or nil when the status text carries no
         /// determinate value.
@@ -408,21 +515,25 @@ struct TorrentOutlineView: NSViewRepresentable {
             cell.setSelectionControlVisible(state != nil)
             let checkbox = cell.selectionCheckbox
             checkbox.node = state == nil ? nil : node
-            checkbox.target = self
-            checkbox.action = #selector(toggleFiles(_:))
+            if checkbox.target !== self { checkbox.target = self }
+            if checkbox.action != #selector(toggleFiles(_:)) { checkbox.action = #selector(toggleFiles(_:)) }
             checkbox.renderedState = state ?? .off
-            checkbox.state = state ?? .off
-            checkbox.isEnabled = state != nil && canInteract && model.canOperateTransfers
-            checkbox.identifier = .init("file-selection:\(node.id)")
+            if checkbox.state != (state ?? .off) { checkbox.state = state ?? .off }
+            let enabled = state != nil && canInteract && model.canOperateTransfers
+            if checkbox.isEnabled != enabled { checkbox.isEnabled = enabled }
+            let identifier = NSUserInterfaceItemIdentifier("file-selection:\(node.id)")
+            if checkbox.identifier != identifier { checkbox.identifier = identifier }
             let folder = node.kind == .folder
             let stateDescription = state == .mixed ? "Some files enabled" : state == .on ? "Enabled for download" : "Not enabled for download"
             let pending = model.isFileSelectionPending(for: node)
             let scope = folder ? "Applies to all files in this folder, including files hidden by search." : "Applies to this file."
             let help = "\(scope) Enable to start all enabled files in this torrent. Disable to stop downloading and retain existing data.\(pending ? " Updating file selection…" : "")"
-            checkbox.toolTip = help
-            checkbox.setAccessibilityLabel("Download \(folder ? "folder" : "file") \(node.name)")
-            checkbox.setAccessibilityValueDescription(stateDescription + (pending ? ". Updating file selection" : ""))
-            checkbox.setAccessibilityHelp(help)
+            if checkbox.toolTip != help { checkbox.toolTip = help }
+            let label = "Download \(folder ? "folder" : "file") \(node.name)"
+            let description = stateDescription + (pending ? ". Updating file selection" : "")
+            if checkbox.accessibilityLabel() != label { checkbox.setAccessibilityLabel(label) }
+            if checkbox.accessibilityValueDescription() != description { checkbox.setAccessibilityValueDescription(description) }
+            if checkbox.accessibilityHelp() != help { checkbox.setAccessibilityHelp(help) }
         }
         @objc private func toggleFiles(_ checkbox: TorrentFileSelectionButton) {
             guard canInteract, model.canOperateTransfers, let node = checkbox.node else { return }
@@ -447,15 +558,20 @@ struct TorrentOutlineView: NSViewRepresentable {
             case .folder: symbol = "folder"
             case .resolving: symbol = "network"
             }
-            return NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            let key = "symbol:\(symbol)" as NSString
+            if let cached = fileIcons.object(forKey: key) { return cached }
+            let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            if let image { fileIcons.setObject(image, forKey: key) }
+            return image
         }
         private func fileIcon(for node: TorrentTreeNode) -> NSImage? {
-            guard let url = node.url else { return NSImage(systemSymbolName: "doc", accessibilityDescription: nil) }
-            let key = url.path as NSString
+            let ext = (node.name as NSString).pathExtension.lowercased()
+            let resolved = UTType(filenameExtension: ext)
+            let type = resolved.flatMap { $0.isDeclared ? $0 : nil } ?? .data
+            let key = type.identifier as NSString
             if let cached = fileIcons.object(forKey: key) { return cached }
-            // Ask macOS for the file's icon, including its associated application's artwork.
-            // Cache it so transfer progress updates do not repeatedly query the filesystem.
-            let image = NSWorkspace.shared.icon(forFile: url.path)
+            // Type artwork never accesses a payload path or wakes its volume.
+            let image = NSWorkspace.shared.icon(for: type)
             fileIcons.setObject(image, forKey: key)
             return image
         }
@@ -549,7 +665,7 @@ private final class TorrentNameCellView: NSTableCellView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         // Layer colors do not resolve dynamically; re-apply the current state.
-        setTransferState(displayedState)
+        setTransferState(displayedState, force: true)
     }
 
     func installSelectionControl(relativeTo icon: NSImageView) {
@@ -568,6 +684,7 @@ private final class TorrentNameCellView: NSTableCellView {
     }
 
     func setSelectionControlVisible(_ visible: Bool) {
+        guard selectionCheckbox.isHidden != !visible || iconLeading?.constant != (visible ? 24 : 2) else { return }
         selectionCheckbox.isHidden = !visible
         selectionCheckbox.setAccessibilityElement(visible)
         iconLeading?.constant = visible ? 24 : 2
@@ -592,7 +709,8 @@ private final class TorrentNameCellView: NSTableCellView {
         ])
     }
 
-    func setTransferState(_ state: TransferState?) {
+    func setTransferState(_ state: TransferState?, force: Bool = false) {
+        guard force || displayedState != state else { return }
         // Reused cells must shed the badge when they become an ordinary file or folder.
         statusBadge.isHidden = state == nil
         displayedState = state

@@ -84,6 +84,7 @@ open -n build/Build/Products/Debug/Torrenza.app --args \
 | Settings appearance | `--ui-appearance-check` |
 | Native multiselection | `--ui-multiselect-check` |
 | Column sorting within folders | `--ui-sort-check` |
+| In-place progress updates and scrolling reuse (1,234 torrents, 2,048 files) | `--ui-scroll-check` |
 | Per-file download controls and scoped actions | `--ui-file-selection-check` |
 | Add Torrent resizing and empty file selection | `--ui-add-torrent` |
 | Add Torrent inline failure and retry layout | `--ui-add-torrent --ui-add-torrent-error` |

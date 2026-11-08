@@ -32,7 +32,10 @@ import UserNotifications
         let indices: Set<Int>
         let selected: Bool
     }
-    private var pendingFileChanges: [String: [FileSelectionChange]] = [:]
+    private var pendingFileChanges: [String: [FileSelectionChange]] = [:] {
+        didSet { selectionIndex = nil }
+    }
+    @ObservationIgnored private var selectionIndex: TorrentTreeSelectionIndex?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var scheduledRefresh: (source: TorrentRefreshSource, id: String, name: String)?
     private var filePickerOpen = false
@@ -50,7 +53,9 @@ import UserNotifications
     }
 
     let tree = TorrentTreeModel(startupVolumeName: (try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? "Startup Disk")
-    var transfers: [TransferSnapshot] = []
+    var transfers: [TransferSnapshot] = [] {
+        didSet { selectionIndex = nil }
+    }
     var statistics: StatisticsSnapshot?
     var settings = EngineSettings()
     var uiState = UIState() {
@@ -629,11 +634,27 @@ import UserNotifications
             ?? transfer.files.first(where: { $0.id == index })?.selected ?? false
     }
     func fileSelectionState(for node: TorrentTreeNode) -> NSControl.StateValue? {
-        guard let target = TorrentTreeActions.fileSelection(for: node, transfers: transfers),
-              let transfer = transfers.first(where: { $0.id == target.id }), !target.indices.isEmpty else { return nil }
-        let selected = target.indices.filter { isFileSelected($0, transfer: transfer) }.count
-        return selected == 0 ? .off : selected == target.indices.count ? .on : .mixed
+        // Read observed inputs even on a cache hit so pending actions continue to
+        // invalidate the SwiftUI outline update as well as this lookup.
+        let snapshots = transfers
+        let changes = pendingFileChanges
+        if selectionIndex == nil {
+            var overrides: [String: [Int: Bool]] = [:]
+            for (id, queued) in changes {
+                for change in queued {
+                    for index in change.indices { overrides[id, default: [:]][index] = change.selected }
+                }
+            }
+            selectionIndex = TorrentTreeSelectionIndex(transfers: snapshots, overrides: overrides)
+        }
+        switch selectionIndex?.state(for: node) {
+        case .off: return .off
+        case .on: return .on
+        case .mixed: return .mixed
+        case nil: return nil
+        }
     }
+
     func isFileSelectionPending(for node: TorrentTreeNode) -> Bool {
         node.transferIDs.contains { pendingTransferActions[$0] != nil }
     }

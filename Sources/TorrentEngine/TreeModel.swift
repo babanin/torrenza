@@ -69,6 +69,7 @@ public struct TreeMetrics: Equatable, Sendable {
         let matchesFilter: Bool
     }
     private var structure: [Structure] = []
+    private var metricsCache: [String: TreeMetrics] = [:]
     private var fileOffsets: [String: [Int: Int]] = [:]
     private var lastSearch = ""
     private var lastFilter: TreeFilter = .all
@@ -84,6 +85,7 @@ public struct TreeMetrics: Equatable, Sendable {
 
     /// Rate/progress updates retain node identity. A changed visible ordering advances generation.
     @discardableResult public func update(_ snapshots: [TransferSnapshot], search: String = "", filter: TreeFilter = .all, sort: TreeSortOrder? = nil) -> Bool {
+        metricsCache.removeAll(keepingCapacity: true)
         transfers = Dictionary(snapshots.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         let sortChanged = self.sort != sort
         self.sort = sort
@@ -216,6 +218,7 @@ public struct TreeMetrics: Equatable, Sendable {
     }
 
     public func metrics(for node: TorrentTreeNode) -> TreeMetrics {
+        if let cached = metricsCache[node.id] { return cached }
         var result = TreeMetrics()
         for id in node.transferIDs {
             guard let transfer = transfers[id] else { continue }
@@ -232,6 +235,7 @@ public struct TreeMetrics: Equatable, Sendable {
                 result.uploadedBytes += transfer.uploadedBytes
             }
         }
+        metricsCache[node.id] = result
         return result
     }
 
